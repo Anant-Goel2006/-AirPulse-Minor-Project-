@@ -51,6 +51,11 @@
   --glass-bg:            rgba(255,255,255,.72);
   --glass-border:        rgba(255,255,255,.86);
   --glass-blur:          16px;
+  --bubble-glass-bg-a:   rgba(255,255,255,.64);
+  --bubble-glass-bg-b:   rgba(255,255,255,.42);
+  --bubble-glass-border: rgba(255,255,255,.72);
+  --bubble-highlight:    rgba(255,255,255,.44);
+  --bubble-shadow:       0 14px 36px rgba(9, 30, 59, .14);
   --page-bg-image:       none;
   --page-bg-pos:         center;
   --page-bg-opacity:     .82;
@@ -139,6 +144,73 @@ body.scene-evening,
 body.scene-night {
   background-attachment: fixed;
   transition: background .8s ease;
+}
+
+.sky-fx {
+  position:fixed;
+  inset:0;
+  z-index:0;
+  pointer-events:none;
+  overflow:hidden;
+}
+.sky-sun {
+  position:absolute;
+  top:56px;
+  right:70px;
+  width:130px;
+  height:130px;
+  border-radius:50%;
+  background:
+    radial-gradient(circle at 35% 35%, rgba(255,255,255,.95) 0%, rgba(255,248,203,.75) 30%, rgba(255,214,120,.42) 58%, rgba(255,194,96,0) 75%);
+  filter:blur(.15px);
+  opacity:.68;
+  animation:sunPulse 8s ease-in-out infinite;
+}
+.sky-cloud {
+  position:absolute;
+  width:230px;
+  height:70px;
+  border-radius:999px;
+  background:linear-gradient(145deg, rgba(255,255,255,.62), rgba(255,255,255,.18));
+  filter:blur(1.4px);
+  opacity:.38;
+}
+.sky-cloud::before,
+.sky-cloud::after {
+  content:'';
+  position:absolute;
+  border-radius:999px;
+  background:inherit;
+}
+.sky-cloud::before { width:48%; height:95%; left:14%; top:-42%; }
+.sky-cloud::after { width:42%; height:90%; right:12%; top:-34%; }
+.sky-cloud-a { top:112px; left:-260px; animation:skyCloudA 52s linear infinite; }
+.sky-cloud-b { top:220px; left:-320px; transform:scale(.82); opacity:.3; animation:skyCloudB 73s linear infinite; }
+.sky-cloud-c { top:324px; left:-300px; transform:scale(1.08); opacity:.26; animation:skyCloudC 66s linear infinite; }
+@keyframes sunPulse {
+  0%, 100% { transform:scale(1); opacity:.64; }
+  50% { transform:scale(1.08); opacity:.78; }
+}
+@keyframes skyCloudA {
+  0% { transform:translateX(-5%); }
+  100% { transform:translateX(calc(100vw + 520px)); }
+}
+@keyframes skyCloudB {
+  0% { transform:translateX(-8%) scale(.82); }
+  100% { transform:translateX(calc(100vw + 620px)) scale(.82); }
+}
+@keyframes skyCloudC {
+  0% { transform:translateX(-10%) scale(1.08); }
+  100% { transform:translateX(calc(100vw + 560px)) scale(1.08); }
+}
+
+.site-header,
+.city-strip,
+.area-live-panel,
+.main-content,
+.site-footer {
+  position:relative;
+  z-index:2;
 }
 
 img,svg { display:block; max-width:100%; }
@@ -931,6 +1003,63 @@ button,input,select { font-family:inherit; }
 .ml-item { display:flex; align-items:center; gap:5px; font-size:.68rem; font-weight:500; color:var(--text-secondary); }
 .ml-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
 
+/* Bubble-glass polish for cards, charts and layout blocks */
+.aqi-hero-card,
+.pollutants-panel,
+.stat-card,
+.chart-card,
+.map-card,
+.area-live-panel {
+  position:relative;
+  overflow:hidden;
+  background:
+    linear-gradient(160deg, var(--bubble-glass-bg-a) 0%, var(--bubble-glass-bg-b) 100%);
+  border-color:var(--bubble-glass-border);
+  box-shadow:var(--bubble-shadow);
+  backdrop-filter:blur(20px) saturate(145%);
+  -webkit-backdrop-filter:blur(20px) saturate(145%);
+}
+
+.aqi-hero-card::before,
+.pollutants-panel::before,
+.stat-card::before,
+.chart-card::before,
+.map-card::before,
+.area-live-panel::before {
+  content:'';
+  position:absolute;
+  width:220px;
+  height:220px;
+  top:-118px;
+  right:-76px;
+  border-radius:50%;
+  background:radial-gradient(circle, var(--bubble-highlight) 0%, rgba(255,255,255,0) 72%);
+  pointer-events:none;
+}
+
+.pollutants-panel::after,
+.stat-card::after,
+.chart-card::after,
+.map-card::after,
+.area-live-panel::after {
+  content:'';
+  position:absolute;
+  width:140px;
+  height:140px;
+  left:-52px;
+  bottom:-74px;
+  border-radius:50%;
+  background:radial-gradient(circle, rgba(255,255,255,.36) 0%, rgba(255,255,255,0) 74%);
+  pointer-events:none;
+}
+
+.chart-canvas-wrap {
+  border-radius:14px;
+  background:linear-gradient(145deg, rgba(255,255,255,.5), rgba(255,255,255,.2));
+  border:1px solid rgba(255,255,255,.5);
+  padding:8px;
+}
+
 /* Leaflet map container */
 #aqiMap {
   width: 100%;
@@ -1186,6 +1315,8 @@ button,input,select { font-family:inherit; }
     transform:scale(1.04) !important;
   }
   .cloud-layer { animation:none !important; opacity:.08 !important; }
+  .sky-sun,
+  .sky-cloud { animation:none !important; }
 }
 
 /* ── Animations ──────────────────────────────────────────────── */

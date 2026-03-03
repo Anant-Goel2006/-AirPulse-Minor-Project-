@@ -100,24 +100,26 @@ const COUNTRY_ALIASES = {
   england: 'united-kingdom',
 };
 const LOCAL_CITY_FALLBACK = {
-  delhi: '/static/assets/hero/cities/delhi.webp',
-  mumbai: '/static/assets/hero/cities/mumbai.webp',
-  bengaluru: 'https://loremflickr.com/3840/2160/bengaluru,city?lock=311',
-  kolkata: 'https://images.unsplash.com/photo-1536421469767-80559bb6f5e1?auto=format&fit=crop&w=3840&q=80',
-  hyderabad: 'https://loremflickr.com/3840/2160/hyderabad,city?lock=991',
-  chennai: 'https://loremflickr.com/3840/2160/chennai,city?lock=731',
-  beijing: '/static/assets/hero/cities/beijing.webp',
-  shanghai: '/static/assets/hero/cities/shanghai.webp',
-  london: '/static/assets/hero/cities/london.webp',
-  'new-york': '/static/assets/hero/cities/new-york.webp',
-  tokyo: '/static/assets/hero/cities/tokyo.webp',
-  singapore: '/static/assets/hero/cities/singapore.webp',
-  sydney: '/static/assets/hero/cities/sydney.webp',
-  paris: 'https://images.unsplash.com/photo-1431274172761-fca41d930114?auto=format&fit=crop&w=3840&q=80',
+  delhi: 'https://loremflickr.com/3840/2160/india,gate,delhi?lock=101',
+  mumbai: 'https://loremflickr.com/3840/2160/gateway,india,mumbai?lock=102',
+  bengaluru: 'https://loremflickr.com/3840/2160/vidhana,soudha,bengaluru?lock=103',
+  kolkata: 'https://loremflickr.com/3840/2160/howrah,bridge,kolkata?lock=104',
+  hyderabad: 'https://loremflickr.com/3840/2160/charminar,hyderabad,city?lock=105',
+  chennai: 'https://loremflickr.com/3840/2160/marina,beach,chennai?lock=106',
+  beijing: 'https://loremflickr.com/3840/2160/forbidden,city,beijing?lock=107',
+  shanghai: 'https://loremflickr.com/3840/2160/the,bund,shanghai?lock=108',
+  london: 'https://loremflickr.com/3840/2160/big,ben,london?lock=109',
+  'new-york': 'https://loremflickr.com/3840/2160/times,square,newyork?lock=110',
+  tokyo: 'https://loremflickr.com/3840/2160/tokyo,tower,japan?lock=111',
+  singapore: 'https://loremflickr.com/3840/2160/marina,bay,singapore?lock=112',
+  sydney: 'https://loremflickr.com/3840/2160/sydney,opera,house?lock=113',
+  paris: 'https://loremflickr.com/3840/2160/eiffel,tower,paris?lock=114',
+  chicago: 'https://loremflickr.com/3840/2160/chicago,skyline,city?lock=115',
+  'los-angeles': 'https://loremflickr.com/3840/2160/hollywood,losangeles,city?lock=116',
 };
 const FORCED_HERO_IMAGE_OVERRIDES = {
-  kolkata: 'https://images.unsplash.com/photo-1536421469767-80559bb6f5e1?auto=format&fit=crop&w=3840&q=80',
-  paris: 'https://images.unsplash.com/photo-1431274172761-fca41d930114?auto=format&fit=crop&w=3840&q=80',
+  kolkata: 'https://loremflickr.com/3840/2160/howrah,bridge,kolkata?lock=104',
+  paris: 'https://loremflickr.com/3840/2160/eiffel,tower,paris?lock=114',
 };
 
 const CITY_BG_ALIASES = {
@@ -511,8 +513,7 @@ function renderAreaAqiList(rows, centerName = '') {
     if (item.country) secondaryParts.push(item.country);
     const secondary = secondaryParts.join(', ') || item.station;
     const guidance = getLocalityGuidance(item.aqi);
-    const thumbSeed = slugifyCity(item.station || `${primary} ${item.city}`) || 'locality';
-    const thumbUrl = buildSeededHeroImage(thumbSeed);
+    const thumbUrl = buildLocalityPhotoUrl(item.station || `${primary} ${item.city}`);
     return `<button class="area-aqi-chip" data-uid="${escapeHtml(item.uid)}" data-station="${escapeHtml(item.station)}" data-display="${escapeHtml(primary)}" data-bghint="${escapeHtml(item.station)}" title="${escapeHtml(item.station)}">
       <span class="area-aqi-thumb" style="background-image:url('${thumbUrl}')"></span>
       <span class="area-aqi-badge" style="background:${cat.color};color:${cat.textClr}">${Math.round(item.aqi)}</span>
@@ -667,6 +668,15 @@ function buildSeededHeroImage(seed) {
   </g>
 </svg>`.trim();
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+function buildLocalityPhotoUrl(labelText) {
+  const raw = String(labelText || '').trim();
+  const lock = (hashSeed(raw || 'locality') % 991) + 1;
+  const slug = slugifyCity(raw);
+  const terms = (slug ? slug.split('-').filter(Boolean).slice(0, 3) : []);
+  const tag = terms.length ? `${terms.join(',')},city` : 'city,street,india';
+  return `https://loremflickr.com/480/300/${tag}?lock=${lock}`;
 }
 
 async function resolveHeroBg(cityName, countryName, queryHint = '') {

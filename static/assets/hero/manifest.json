@@ -5,113 +5,113 @@
   },
   "cities": {
     "delhi": {
-      "imageUrl": "/static/assets/hero/cities/delhi.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/india,gate,delhi?lock=101",
       "focalPoint": "center"
     },
     "mumbai": {
-      "imageUrl": "/static/assets/hero/cities/mumbai.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/gateway,india,mumbai?lock=102",
       "focalPoint": "center"
     },
     "bengaluru": {
-      "imageUrl": "https://loremflickr.com/3840/2160/bengaluru,city?lock=311",
+      "imageUrl": "https://loremflickr.com/3840/2160/vidhana,soudha,bengaluru?lock=103",
       "focalPoint": "center"
     },
     "kolkata": {
-      "imageUrl": "/static/assets/hero/cities/kolkata.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/howrah,bridge,kolkata?lock=104",
       "focalPoint": "center"
     },
     "hyderabad": {
-      "imageUrl": "https://loremflickr.com/3840/2160/hyderabad,city?lock=991",
+      "imageUrl": "https://loremflickr.com/3840/2160/charminar,hyderabad,city?lock=105",
       "focalPoint": "center"
     },
     "chennai": {
-      "imageUrl": "https://loremflickr.com/3840/2160/chennai,city?lock=731",
+      "imageUrl": "https://loremflickr.com/3840/2160/marina,beach,chennai?lock=106",
       "focalPoint": "center"
     },
     "beijing": {
-      "imageUrl": "/static/assets/hero/cities/beijing.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/forbidden,city,beijing?lock=107",
       "focalPoint": "center"
     },
     "shanghai": {
-      "imageUrl": "/static/assets/hero/cities/shanghai.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/the,bund,shanghai?lock=108",
       "focalPoint": "center"
     },
     "london": {
-      "imageUrl": "/static/assets/hero/cities/london.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/big,ben,london?lock=109",
       "focalPoint": "center"
     },
     "new-york": {
-      "imageUrl": "/static/assets/hero/cities/new-york.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/times,square,newyork?lock=110",
       "focalPoint": "center"
     },
     "tokyo": {
-      "imageUrl": "/static/assets/hero/cities/tokyo.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/tokyo,tower,japan?lock=111",
       "focalPoint": "center"
     },
     "singapore": {
-      "imageUrl": "/static/assets/hero/cities/singapore.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/marina,bay,singapore?lock=112",
       "focalPoint": "center"
     },
     "sydney": {
-      "imageUrl": "/static/assets/hero/cities/sydney.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/sydney,opera,house?lock=113",
       "focalPoint": "center"
     },
     "paris": {
-      "imageUrl": "/static/assets/hero/cities/paris.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/eiffel,tower,paris?lock=114",
       "focalPoint": "center"
     },
     "chicago": {
-      "imageUrl": "/static/assets/hero/cities/chicago.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/chicago,skyline,city?lock=115",
       "focalPoint": "center"
     },
     "los-angeles": {
-      "imageUrl": "/static/assets/hero/cities/los-angeles.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/hollywood,losangeles,city?lock=116",
       "focalPoint": "center"
     }
   },
   "countries": {
     "india": {
-      "imageUrl": "/static/assets/hero/countries/india.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/taj,mahal,india?lock=201",
       "focalPoint": "center"
     },
     "china": {
-      "imageUrl": "/static/assets/hero/countries/china.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/great,wall,china?lock=202",
       "focalPoint": "center"
     },
     "japan": {
-      "imageUrl": "/static/assets/hero/countries/japan.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/mount,fuji,japan?lock=203",
       "focalPoint": "center"
     },
     "us": {
-      "imageUrl": "/static/assets/hero/countries/us.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/statue,liberty,usa?lock=204",
       "focalPoint": "center"
     },
     "usa": {
-      "imageUrl": "/static/assets/hero/countries/usa.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/statue,liberty,usa?lock=204",
       "focalPoint": "center"
     },
     "united-states": {
-      "imageUrl": "/static/assets/hero/countries/united-states.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/statue,liberty,usa?lock=204",
       "focalPoint": "center"
     },
     "uk": {
-      "imageUrl": "/static/assets/hero/countries/uk.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/london,bridge,uk?lock=205",
       "focalPoint": "center"
     },
     "united-kingdom": {
-      "imageUrl": "/static/assets/hero/countries/united-kingdom.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/london,bridge,uk?lock=205",
       "focalPoint": "center"
     },
     "australia": {
-      "imageUrl": "/static/assets/hero/countries/australia.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/australia,sydney,opera?lock=206",
       "focalPoint": "center"
     },
     "france": {
-      "imageUrl": "/static/assets/hero/countries/france.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/eiffel,tower,france?lock=207",
       "focalPoint": "center"
     },
     "singapore": {
-      "imageUrl": "/static/assets/hero/countries/singapore.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/marina,bay,singapore?lock=208",
       "focalPoint": "center"
     }
   }
