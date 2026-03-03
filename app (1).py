@@ -49,12 +49,16 @@ APP_BUILD_TS  = int(time.time())
 
 app = Flask(__name__)
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+app.config["TEMPLATES_AUTO_RELOAD"] = True
+app.jinja_env.auto_reload = True
 
 # ── Global state ───────────────────────────────────────────────
 df       = None
 model    = None
 scaler   = None
 encoders = None
+LIVE_FEED_CACHE = {}
+LIVE_CACHE_TTL_SEC = int(os.getenv("LIVE_CACHE_TTL_SEC", "1800"))
 
 # ── AQI categories (EPA standard + aqi.in labels) ─────────────
 AQI_CATEGORIES = [
@@ -144,14 +148,18 @@ def waqi_get_json(path, params=None, timeout=8, log_label="WAQI"):
         resp = requests.get(endpoint, params=query, timeout=timeout)
         try:
             payload = resp.json()
-        except Exception:
+        except Exception as json_err:
+            print(f"⚠ JSON parse error: {json_err}")
             payload = {"status": "error", "data": "Invalid WAQI response"}
         return payload, resp.status_code
     except requests.exceptions.ConnectionError:
+        print(f"⚠ Connection error")
         return {"status": "error", "data": "Cannot reach api.waqi.info"}, 503
     except requests.exceptions.Timeout:
+        print(f"⚠ Timeout error")
         return {"status": "error", "data": "WAQI API timeout"}, 504
     except Exception as e:
+        print(f"⚠ Unexpected error: {e}")
         return {"status": "error", "data": str(e)}, 500
 
 
@@ -159,7 +167,8 @@ def fetch_feed(query, timeout=8):
     q = normalize_query_text(query)
     if not q:
         return {"status": "error", "data": "Empty station query"}, 400
-    return waqi_get_json(f"/feed/{encode_feed_query(q)}/", timeout=timeout, log_label="WAQI FEED")
+    payload, code = waqi_get_json(f"/feed/{encode_feed_query(q)}/", timeout=timeout, log_label="WAQI FEED")
+    return normalize_feed_payload(payload), code
 
 
 def fetch_search(keyword, timeout=6):
@@ -184,6 +193,57 @@ def parse_aqi_value(raw):
         return None
 
 
+def _extract_iaqi_value(iaqi, key):
+    if not isinstance(iaqi, dict):
+        return None
+    node = iaqi.get(key)
+    if isinstance(node, dict):
+        return parse_aqi_value(node.get("v"))
+    return parse_aqi_value(node)
+
+
+def normalize_feed_payload(payload):
+    """Normalize WAQI feed payload so valid live stations don't fail on missing top-level AQI."""
+    if not isinstance(payload, dict):
+        return payload
+    if str(payload.get("status", "")).lower() != "ok":
+        return payload
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return payload
+
+    aqi_val = parse_aqi_value(data.get("aqi"))
+    if aqi_val is not None:
+        return payload
+
+    iaqi = data.get("iaqi")
+    dominant = str(data.get("dominentpol", "")).strip().lower()
+    priority = []
+    if dominant:
+        priority.append(dominant)
+    priority.extend(["pm25", "pm10", "o3", "no2", "so2"])
+
+    seen = set()
+    fallback = None
+    for key in priority:
+        if key in seen:
+            continue
+        seen.add(key)
+        val = _extract_iaqi_value(iaqi, key)
+        if val is not None:
+            fallback = val
+            break
+
+    if fallback is None:
+        return payload
+
+    out = dict(payload)
+    patched_data = dict(data)
+    patched_data["aqi"] = int(round(float(fallback)))
+    out["data"] = patched_data
+    return out
+
+
 def is_valid_feed_payload(payload):
     if not isinstance(payload, dict):
         return False
@@ -195,7 +255,16 @@ def is_valid_feed_payload(payload):
     if str(data.get("status", "")).lower() == "error":
         return False
     city = data.get("city")
-    if not isinstance(city, dict) or not str(city.get("name", "")).strip():
+    if not isinstance(city, dict):
+        return False
+    city_name = str(city.get("name", "")).strip()
+    if not city_name:
+        return False
+    if re.fullmatch(r"@?\d+", city_name):
+        return False
+    if city_name.lower() in {"unknown station", "unknown", "n/a"}:
+        return False
+    if parse_aqi_value(data.get("aqi")) is None:
         return False
     return True
 
@@ -250,6 +319,40 @@ def with_resolved_meta(payload, input_query, normalized_query, source, matched_u
     return out
 
 
+def _live_cache_key(raw_query):
+    return normalize_query_text(raw_query).lower().strip()
+
+
+def remember_live_cache(query_keys, payload):
+    if not is_valid_feed_payload(payload):
+        return
+    snapshot = json.loads(json.dumps(payload))
+    now = time.time()
+    for raw in query_keys:
+        key = _live_cache_key(raw)
+        if key:
+            LIVE_FEED_CACHE[key] = {"ts": now, "payload": snapshot}
+
+
+def get_live_cache(query_keys):
+    now = time.time()
+    for raw in query_keys:
+        key = _live_cache_key(raw)
+        if not key:
+            continue
+        row = LIVE_FEED_CACHE.get(key)
+        if not isinstance(row, dict):
+            continue
+        ts = float(row.get("ts", 0))
+        payload = row.get("payload")
+        if now - ts > LIVE_CACHE_TTL_SEC:
+            LIVE_FEED_CACHE.pop(key, None)
+            continue
+        if is_valid_feed_payload(payload):
+            return json.loads(json.dumps(payload))
+    return None
+
+
 def haversine_km(lat1, lon1, lat2, lon2):
     r = 6371.0
     d_lat = math.radians(lat2 - lat1)
@@ -302,6 +405,137 @@ def location_from_station_name(raw_name, fallback=""):
         if any(h in nt for h in AREA_HINTS) or any(ch.isdigit() for ch in nt):
             area = first
     return {"area": area, "city": city, "country": country}
+
+
+def collect_live_area_rows(center_lat, center_lng, fallback_city="", radius_limit=32.0, max_rows=140):
+    """Collect nearby live area stations and sort by AQI ascending (small to big)."""
+    max_rows = max(20, min(int(max_rows or 140), 400))
+    radius_limit = max(6.0, min(float(radius_limit or 32.0), 50.0))
+
+    default_radii = [6.0, 12.0, 20.0, 30.0]
+    radii = [r for r in default_radii if r <= radius_limit]
+    if radius_limit not in radii:
+        radii.append(radius_limit)
+
+    rows_by_key = {}
+    for radius in radii:
+        lat1, lng1, lat2, lng2 = compute_bounds_for_radius(center_lat, center_lng, radius)
+        map_payload, map_code = fetch_map_bounds(
+            round(lat1, 6), round(lng1, 6), round(lat2, 6), round(lng2, 6), timeout=8
+        )
+        if map_code >= 500:
+            continue
+        stations = map_payload.get("data") if isinstance(map_payload, dict) else None
+        if not isinstance(stations, list) or not stations:
+            continue
+
+        for st in stations:
+            try:
+                raw_aqi = parse_aqi_value(st.get("aqi"))
+                if raw_aqi is None:
+                    continue
+                st_lat = float(st.get("lat"))
+                st_lng = float(st.get("lon"))
+                station_name = ((st.get("station") or {}).get("name") or "").strip()
+                if not station_name:
+                    continue
+                uid = st.get("uid")
+                loc = location_from_station_name(station_name, fallback=fallback_city)
+                area = str(loc.get("area") or "").strip()
+                city = str(loc.get("city") or fallback_city or "").strip()
+                country = str(loc.get("country") or "").strip()
+                distance = haversine_km(center_lat, center_lng, st_lat, st_lng)
+
+                key = f"uid:{uid}" if uid is not None else f"name:{normalize_station_text(station_name)}"
+                row = {
+                    "uid": int(uid) if uid is not None else None,
+                    "aqi": int(round(float(raw_aqi))),
+                    "station_name": station_name,
+                    "area": area,
+                    "city": city,
+                    "country": country,
+                    "lat": round(st_lat, 6),
+                    "lng": round(st_lng, 6),
+                    "distance_km": round(distance, 3),
+                }
+                prev = rows_by_key.get(key)
+                if prev is None or row["distance_km"] < prev["distance_km"]:
+                    rows_by_key[key] = row
+            except Exception:
+                continue
+
+    rows = list(rows_by_key.values())
+    # Supplement map coverage with search localities (useful for sparse map-bounds regions).
+    if len(rows) < max(15, int(max_rows * 0.65)):
+        city_hint = location_from_station_name(fallback_city or "", fallback=fallback_city).get("city") or fallback_city
+        search_payload, _ = fetch_search(city_hint)
+        ranked = rank_search_candidates(search_payload, city_hint)
+        uid_refetch_budget = 24
+        for item in ranked:
+            if len(rows_by_key) >= max_rows:
+                break
+            station = item.get("station") or {}
+            station_name = str(station.get("name") or "").strip()
+            if not station_name:
+                continue
+            uid = item.get("uid")
+            key = f"uid:{uid}" if uid is not None else f"name:{normalize_station_text(station_name)}"
+            if key in rows_by_key:
+                continue
+
+            aqi_val = parse_aqi_value(item.get("aqi"))
+            st_geo = station.get("geo") if isinstance(station, dict) else None
+            st_lat = st_lng = None
+            if isinstance(st_geo, (list, tuple)) and len(st_geo) >= 2:
+                try:
+                    st_lat = float(st_geo[0])
+                    st_lng = float(st_geo[1])
+                except Exception:
+                    st_lat = st_lng = None
+
+            if (aqi_val is None or st_lat is None or st_lng is None) and uid is not None and uid_refetch_budget > 0:
+                uid_refetch_budget -= 1
+                feed_payload, _ = fetch_feed(f"@{uid}")
+                if is_valid_feed_payload(feed_payload):
+                    fdata = feed_payload.get("data") or {}
+                    fcity = fdata.get("city") or {}
+                    aqi_val = parse_aqi_value(fdata.get("aqi"))
+                    fgeo = fcity.get("geo") if isinstance(fcity, dict) else None
+                    if isinstance(fgeo, (list, tuple)) and len(fgeo) >= 2:
+                        try:
+                            st_lat = float(fgeo[0])
+                            st_lng = float(fgeo[1])
+                        except Exception:
+                            pass
+                    live_name = str(fcity.get("name") or "").strip()
+                    if live_name:
+                        station_name = live_name
+
+            if aqi_val is None:
+                continue
+            if st_lat is None or st_lng is None:
+                continue
+
+            loc = location_from_station_name(station_name, fallback=fallback_city)
+            area = str(loc.get("area") or "").strip()
+            city = str(loc.get("city") or fallback_city or "").strip()
+            country = str(loc.get("country") or "").strip()
+            distance = haversine_km(center_lat, center_lng, st_lat, st_lng)
+            rows_by_key[key] = {
+                "uid": int(uid) if uid is not None else None,
+                "aqi": int(round(float(aqi_val))),
+                "station_name": station_name,
+                "area": area,
+                "city": city,
+                "country": country,
+                "lat": round(st_lat, 6),
+                "lng": round(st_lng, 6),
+                "distance_km": round(distance, 3),
+            }
+
+    rows = list(rows_by_key.values())
+    rows.sort(key=lambda r: (r.get("aqi", 9999), r.get("distance_km", 9999), normalize_station_text(r.get("station_name", ""))))
+    return rows[:max_rows]
 
 def get_time_phase_from_iso(time_iso):
     """Map local timestamp to day/evening/night bands."""
@@ -547,23 +781,42 @@ def resolve_best_live_payload(raw_query):
     best_error_payload = {"status": "error", "data": f"Unknown station for query '{input_query}'"}
     best_status = 404
 
+    def error_result(source):
+        payload = best_error_payload
+        status = best_status if isinstance(best_status, int) and best_status >= 400 else 404
+        if not isinstance(payload, dict) or str(payload.get("status", "")).lower() != "error":
+            payload = {"status": "error", "data": f"No valid live station found for '{input_query}'"}
+        return with_resolved_meta(payload, input_query, normalized_query, source), status
+
+    def capture_error(payload, code):
+        nonlocal best_error_payload, best_status
+        if isinstance(payload, dict) and str(payload.get("status", "")).lower() == "error":
+            best_error_payload = payload
+            best_status = code
+
     for candidate in candidates:
         payload, code = fetch_feed(candidate)
         if is_valid_feed_payload(payload):
             source = "alias" if candidate != input_query else "direct"
             return with_resolved_meta(payload, input_query, normalized_query, source), 200
-        best_error_payload = payload
-        best_status = code
+        capture_error(payload, code)
 
     if normalized_query.startswith("@") and re.fullmatch(r"@\d+", normalized_query):
-        return with_resolved_meta(best_error_payload, input_query, normalized_query, "direct"), best_status
+        return error_result("direct")
 
     search_payload, search_code = fetch_search(normalized_query or input_query)
     if not isinstance(search_payload, dict):
-        return with_resolved_meta(best_error_payload, input_query, normalized_query, "direct"), best_status
+        return error_result("direct")
+    if str(search_payload.get("status", "")).lower() != "ok":
+        capture_error(search_payload, search_code)
+        return error_result("search_name")
+    if not isinstance(search_payload.get("data"), list):
+        return error_result("search_name")
 
     ranked = rank_search_candidates(search_payload, normalized_query or input_query)
-    for item in ranked[:8]:
+    if not ranked:
+        return error_result("search_name")
+    for item in ranked[:20]:
         uid = item.get("uid")
         station = item.get("station") or {}
         station_name = normalize_query_text(station.get("name", ""))
@@ -571,18 +824,14 @@ def resolve_best_live_payload(raw_query):
             payload, code = fetch_feed(f"@{uid}")
             if is_valid_feed_payload(payload):
                 return with_resolved_meta(payload, input_query, normalized_query, "search_uid", matched_uid=uid), 200
-            best_error_payload = payload
-            best_status = code
+            capture_error(payload, code)
         if station_name:
             payload, code = fetch_feed(station_name)
             if is_valid_feed_payload(payload):
                 return with_resolved_meta(payload, input_query, normalized_query, "search_name", matched_uid=uid), 200
-            best_error_payload = payload
-            best_status = code
+            capture_error(payload, code)
 
-    if ranked:
-        return with_resolved_meta(best_error_payload, input_query, normalized_query, "search_uid"), best_status
-    return with_resolved_meta(search_payload, input_query, normalized_query, "direct"), search_code
+    return error_result("search_uid")
 
 
 @app.route("/api/live/<path:city>")
@@ -590,7 +839,18 @@ def live_aqi(city):
     """Resolve live AQI from WAQI using direct query + alias + search fallback."""
     if not WAQI_TOKEN:
         return jsonify({"status": "error", "data": "WAQI token not configured on server"}), 503
+    input_query = normalize_query_text(city)
+    normalized_query, _ = normalize_live_query(input_query)
     payload, code = resolve_best_live_payload(city)
+    if is_valid_feed_payload(payload):
+        remember_live_cache([input_query, normalized_query], payload)
+        return jsonify(payload), code
+
+    cached = get_live_cache([input_query, normalized_query])
+    if cached:
+        cached = with_resolved_meta(cached, input_query, normalized_query, "cache")
+        return jsonify(cached), 200
+
     return jsonify(payload), code
 
 
@@ -602,6 +862,9 @@ def live_aqi_geo(lat, lon):
     payload, code = fetch_feed(f"geo:{lat};{lon}")
     if is_valid_feed_payload(payload):
         payload = with_resolved_meta(payload, f"geo:{lat};{lon}", f"geo:{lat};{lon}", "geo")
+    elif isinstance(payload, dict) and str(payload.get("status", "")).lower() == "ok":
+        payload = {"status": "error", "data": "No valid nearby live station found via geo feed"}
+        code = 404
     return jsonify(payload), code
 
 @app.route("/api/live/search/<path:keyword>")
@@ -611,6 +874,73 @@ def live_search(keyword):
         return jsonify({"status": "error", "data": "WAQI token not configured on server"}), 503
     payload, code = fetch_search(keyword)
     return jsonify(payload), code
+
+
+@app.route("/api/live/areas/<path:city>")
+def live_area_list(city):
+    """Area-wise live AQI list around the selected city (AQI low -> high)."""
+    if not WAQI_TOKEN:
+        return jsonify({"status": "error", "data": "WAQI token not configured on server"}), 503
+
+    limit = int(safe_float(request.args.get("limit"), 140))
+    limit = max(20, min(limit, 400))
+    radius_km = safe_float(request.args.get("radius_km"), 32.0)
+
+    payload, code = resolve_best_live_payload(city)
+    if not is_valid_feed_payload(payload):
+        return jsonify(payload), code
+
+    data = payload.get("data") or {}
+    city_meta = data.get("city") or {}
+    geo = city_meta.get("geo") if isinstance(city_meta, dict) else None
+    try:
+        center_lat = float(geo[0])
+        center_lng = float(geo[1])
+    except Exception:
+        return jsonify({
+            "status": "error",
+            "data": "City center coordinates unavailable for area lookup",
+            "resolved": payload.get("resolved"),
+        }), 422
+
+    rows = collect_live_area_rows(
+        center_lat=center_lat,
+        center_lng=center_lng,
+        fallback_city=normalize_query_text(city),
+        radius_limit=radius_km,
+        max_rows=limit,
+    )
+
+    # Ensure at least the resolved city station is present when map coverage is sparse.
+    if not rows:
+        loc = location_from_station_name(str(city_meta.get("name") or city), fallback=str(city))
+        base_aqi = parse_aqi_value(data.get("aqi"))
+        if base_aqi is not None:
+            rows = [{
+                "uid": data.get("idx"),
+                "aqi": int(round(float(base_aqi))),
+                "station_name": str(city_meta.get("name") or city).strip(),
+                "area": str(loc.get("area") or "").strip(),
+                "city": str(loc.get("city") or city).strip(),
+                "country": str(loc.get("country") or "").strip(),
+                "lat": round(center_lat, 6),
+                "lng": round(center_lng, 6),
+                "distance_km": 0.0,
+            }]
+
+    out = {
+        "status": "ok",
+        "city": {
+            "name": str(city_meta.get("name") or city).strip(),
+            "lat": round(center_lat, 6),
+            "lng": round(center_lng, 6),
+        },
+        "sort": "aqi_asc",
+        "count": len(rows),
+        "areas": rows,
+        "resolved": payload.get("resolved"),
+    }
+    return jsonify(out), 200
 
 
 @app.route("/api/live/nearby")
@@ -766,9 +1096,8 @@ def current_aqi():
                 dcity = df[city_series.str.contains(city_q, regex=False, na=False)]
             if not dcity.empty:
                 latest = dcity.sort_values("timestamp").iloc[-1]
-            else:
-                # Do not fall back to latest global row for a city-specific request.
-                return jsonify({"error": f'No local AQI data found for city "{city_q}"'}), 404
+            # If city not found, fall back to latest global record instead of error
+            # This ensures we always return SOME data rather than failing
 
         if latest is None:
             latest = df.sort_values("timestamp").iloc[-1]

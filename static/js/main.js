@@ -40,6 +40,7 @@ let heroManifestCache = null;
 let heroManifestPromise = null;
 let mapLoadSeq = 0;
 let mapMoveTimer = null;
+let areaListLoadSeq = 0;
 const DEBUG_STABILITY = false;
 
 function stabilityLog(msg, meta = null) {
@@ -79,7 +80,7 @@ const LOCAL_CITY_FALLBACK = {
   delhi: '/static/assets/hero/cities/delhi.webp',
   mumbai: '/static/assets/hero/cities/mumbai.webp',
   bengaluru: '/static/assets/hero/cities/bengaluru.webp',
-  kolkata: '/static/assets/hero/cities/kolkata.webp',
+  kolkata: 'https://images.unsplash.com/photo-1677307816181-1446ab18913e?auto=format&fit=crop&w=3840&q=80',
   hyderabad: '/static/assets/hero/cities/hyderabad.webp',
   chennai: '/static/assets/hero/cities/chennai.webp',
   beijing: '/static/assets/hero/cities/beijing.webp',
@@ -89,12 +90,17 @@ const LOCAL_CITY_FALLBACK = {
   tokyo: '/static/assets/hero/cities/tokyo.webp',
   singapore: '/static/assets/hero/cities/singapore.webp',
   sydney: '/static/assets/hero/cities/sydney.webp',
-  paris: '/static/assets/hero/cities/paris.webp',
+  paris: 'https://images.unsplash.com/photo-1764564133113-b9f40c9d1a1a?auto=format&fit=crop&w=3840&q=80',
+};
+const FORCED_HERO_IMAGE_OVERRIDES = {
+  kolkata: 'https://images.unsplash.com/photo-1677307816181-1446ab18913e?auto=format&fit=crop&w=3840&q=80',
+  paris: 'https://images.unsplash.com/photo-1764564133113-b9f40c9d1a1a?auto=format&fit=crop&w=3840&q=80',
 };
 
 const CITY_BG_ALIASES = {
   bangalore: 'bengaluru',
   'new-york-city': 'new-york',
+  apris: 'paris',
   nyc: 'new-york',
 };
 const REMOTE_BG_BASE = 'https://picsum.photos/seed';
@@ -287,6 +293,106 @@ function parseMapStationLocation(rawName, fallbackCity = '') {
   };
 }
 
+function escapeHtml(raw) {
+  return String(raw || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderAreaAqiState(msg) {
+  const listEl = $('areaAqiList');
+  const metaEl = $('areaAqiMeta');
+  if (!listEl) return;
+  listEl.innerHTML = `<div class="area-aqi-state">${escapeHtml(msg)}</div>`;
+  if (metaEl && !msg.toLowerCase().includes('loading')) {
+    metaEl.textContent = '';
+  }
+}
+
+function renderAreaAqiList(rows, centerName = '') {
+  const listEl = $('areaAqiList');
+  const metaEl = $('areaAqiMeta');
+  if (!listEl) return;
+  if (!Array.isArray(rows) || !rows.length) {
+    renderAreaAqiState('No live localities found for this city right now.');
+    return;
+  }
+
+  const items = rows
+    .map(item => ({
+      uid: item?.uid != null ? String(item.uid).replace(/[^\d]/g, '') : '',
+      station: String(item?.station_name || '').trim(),
+      area: titleCaseWords(cleanPlaceToken(item?.area || '')),
+      city: titleCaseWords(cleanPlaceToken(item?.city || '')),
+      country: titleCaseWords(cleanPlaceToken(item?.country || '')),
+      aqi: Number(item?.aqi),
+      distance: Number(item?.distance_km),
+    }))
+    .filter(item => item.station && Number.isFinite(item.aqi))
+    .sort((a, b) => a.aqi - b.aqi || a.distance - b.distance);
+
+  if (!items.length) {
+    renderAreaAqiState('No live localities found for this city right now.');
+    return;
+  }
+
+  if (metaEl) {
+    const label = centerName ? ` around ${centerName}` : '';
+    metaEl.textContent = `${items.length} live areas${label} · sorted AQI low to high`;
+  }
+
+  listEl.innerHTML = items.map(item => {
+    const cat = getCat(item.aqi);
+    const primary = item.area || item.city || titleCaseWords(curCity);
+    const secondaryParts = [];
+    if (item.city && normalizeCityKey(item.city) !== normalizeCityKey(primary)) secondaryParts.push(item.city);
+    if (item.country) secondaryParts.push(item.country);
+    const secondary = secondaryParts.join(', ') || item.station;
+    return `<button class="area-aqi-chip" data-uid="${escapeHtml(item.uid)}" data-station="${escapeHtml(item.station)}" title="${escapeHtml(item.station)}">
+      <span class="area-aqi-badge" style="background:${cat.color};color:${cat.textClr}">${Math.round(item.aqi)}</span>
+      <span class="area-aqi-text">
+        <span class="area-aqi-primary">${escapeHtml(primary)}</span>
+        <span class="area-aqi-secondary">${escapeHtml(secondary)}</span>
+      </span>
+    </button>`;
+  }).join('');
+
+  listEl.querySelectorAll('.area-aqi-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const uid = String(btn.dataset.uid || '').trim();
+      const station = String(btn.dataset.station || '').trim();
+      if (uid) {
+        loadCity(`@${uid}`);
+        return;
+      }
+      if (station) loadCity(station);
+    });
+  });
+}
+
+async function loadAreaAqiList(cityQuery, reqSeq = null) {
+  const query = String(cityQuery || curCity || '').trim();
+  if (!query) return;
+  const thisSeq = ++areaListLoadSeq;
+  renderAreaAqiState('Loading locality AQI...');
+  try {
+    const r = await fetchJsonNoCache(`/api/live/areas/${encodeURIComponent(query)}?limit=140&radius_km=32`);
+    if (thisSeq !== areaListLoadSeq) return;
+    if (isStaleReq(reqSeq)) return;
+    if (r?.status !== 'ok' || !Array.isArray(r?.areas)) {
+      renderAreaAqiState('Area AQI is temporarily unavailable.');
+      return;
+    }
+    renderAreaAqiList(r.areas, r?.city?.name || query);
+  } catch (e) {
+    if (thisSeq !== areaListLoadSeq) return;
+    renderAreaAqiState('Area AQI is temporarily unavailable.');
+  }
+}
+
 function isRequestedCityMatch(requestedCity, returnedCity) {
   const requested = normalizeCityKey(parseCityCountry(requestedCity, requestedCity).city || requestedCity);
   const returned = normalizeCityKey(parseCityCountry(returnedCity, requestedCity).city || returnedCity);
@@ -334,6 +440,9 @@ async function resolveHeroBg(cityName, countryName) {
   const cityKey = resolveCityKey(cityName);
   const countryKey = resolveCountryKey(countryName);
 
+  if (cityKey && FORCED_HERO_IMAGE_OVERRIDES[cityKey]) {
+    return { imageUrl: FORCED_HERO_IMAGE_OVERRIDES[cityKey], focalPoint: 'center' };
+  }
   if (cityKey && manifest?.cities?.[cityKey]?.imageUrl) return manifest.cities[cityKey];
   if (cityKey && LOCAL_CITY_FALLBACK[cityKey]) {
     return { imageUrl: LOCAL_CITY_FALLBACK[cityKey], focalPoint: 'center' };
@@ -590,67 +699,114 @@ if (btnRefresh) {
   });
 }
 
+async function getApproxCoordsFromIP() {
+  const providers = [
+    'https://ipapi.co/json/',
+    'https://ipwho.is/',
+  ];
+  for (const url of providers) {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      const j = await r.json();
+      const lat = Number(j?.latitude ?? j?.lat);
+      const lng = Number(j?.longitude ?? j?.lon ?? j?.lng);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) {
+        return { lat, lng, provider: url };
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function loadLiveFromCoords(lat, lng, modeLabel = 'your location') {
+  const latStr = Number(lat).toFixed(6);
+  const lngStr = Number(lng).toFixed(6);
+
+  try {
+    const nearby = await fetchJsonNoCache(`/api/live/nearby?lat=${latStr}&lng=${lngStr}`);
+    if (nearby?.status === 'ok' && nearby?.data) {
+      const uid = String(nearby?.nearest?.uid ?? '').replace(/[^\d]/g, '');
+      const stationName = nearby?.nearest?.station_name || nearby?.data?.city?.name || '';
+      await loadCity(uid ? `@${uid}` : (stationName || `geo:${latStr};${lngStr}`));
+      const stationLat = Number(nearby?.nearest?.lat ?? nearby?.data?.city?.geo?.[0]);
+      const stationLng = Number(nearby?.nearest?.lng ?? nearby?.data?.city?.geo?.[1]);
+      if (aqiMap && Number.isFinite(stationLat) && Number.isFinite(stationLng)) {
+        aqiMap.setView([stationLat, stationLng], Math.max(aqiMap.getZoom(), 11));
+      }
+      const d = Number(nearby?.nearest?.distance_km);
+      if (Number.isFinite(d)) toast(`Nearest station is ${d.toFixed(1)} km from ${modeLabel}`, 'success');
+      else toast(`Loaded live AQI for ${modeLabel}`, 'success');
+      showLocationAqiPopup(lat, lng, nearby.data);
+      return true;
+    }
+  } catch {}
+
+  try {
+    const geo = await fetchJsonNoCache(`/api/live/geo/${latStr}/${lngStr}`);
+    if (geo?.status === 'ok' && geo?.data) {
+      const stationName = geo?.data?.city?.name || `geo:${latStr};${lngStr}`;
+      await loadCity(stationName);
+      const stationLat = Number(geo?.data?.city?.geo?.[0]);
+      const stationLng = Number(geo?.data?.city?.geo?.[1]);
+      if (aqiMap && Number.isFinite(stationLat) && Number.isFinite(stationLng)) {
+        aqiMap.setView([stationLat, stationLng], Math.max(aqiMap.getZoom(), 11));
+      }
+      toast(`Loaded live AQI for ${modeLabel}`, 'success');
+      showLocationAqiPopup(lat, lng, geo.data);
+      return true;
+    }
+  } catch {}
+
+  const nearest = await getNearestCityFromCsv(lat, lng);
+  if (nearest?.city) {
+    if (aqiMap) aqiMap.setView([Number(nearest.lat), Number(nearest.lng)], 10);
+    await loadCity(nearest.city);
+    toast(`Live geo unavailable. Showing nearest city: ${nearest.city}`, 'info');
+    return true;
+  }
+  return false;
+}
+
 // Locate button: find user and show AQI at their coordinates
 const btnLocate = $('btnLocate');
 if (btnLocate) {
-  btnLocate.addEventListener('click', () => {
-    if (!navigator.geolocation) { toast('Geolocation not supported', 'error'); return; }
+  btnLocate.addEventListener('click', async () => {
     btnLocate.classList.add('spinning');
+    const release = () => setTimeout(() => btnLocate.classList.remove('spinning'), 500);
+
+    const tryApproximate = async () => {
+      const approx = await getApproxCoordsFromIP();
+      if (!approx) return false;
+      const ok = await loadLiveFromCoords(approx.lat, approx.lng, 'approximate location');
+      if (ok) toast('Using approximate location (IP-based)', 'info');
+      return ok;
+    };
+
+    if (!navigator.geolocation) {
+      if (!(await tryApproximate())) {
+        toast('Geolocation not available in this browser', 'error');
+      }
+      release();
+      return;
+    }
+
     navigator.geolocation.getCurrentPosition(async pos => {
       const lat = Number(pos.coords.latitude);
       const lng = Number(pos.coords.longitude);
-      const latStr = lat.toFixed(6);
-      const lngStr = lng.toFixed(6);
-
-      const fallbackToNearest = async () => {
-        const nearest = await getNearestCityFromCsv(lat, lng);
-        if (nearest?.city) {
-          if (aqiMap) aqiMap.setView([Number(nearest.lat), Number(nearest.lng)], 10);
-          loadCity(nearest.city);
-          toast(`Live geo unavailable. Showing nearest city: ${nearest.city}`, 'info');
-          return true;
-        }
-        return false;
-      };
-
-      try {
-        const j = await fetchJsonNoCache(`/api/live/geo/${latStr}/${lngStr}`);
-    if (j.status === 'ok' && j.data) {
-          const data = j.data;
-          const stationLat = Number(data.city?.geo?.[0]);
-          const stationLng = Number(data.city?.geo?.[1]);
-          const centerLat = Number.isFinite(stationLat) ? stationLat : lat;
-          const centerLng = Number.isFinite(stationLng) ? stationLng : lng;
-          // Keep city ownership with explicit user selection (loadCity path only).
-          stabilityLog('Geo preview loaded without mutating selected city', { selectedCity: curCity, previewCity: data.city?.name });
-
-          if (aqiMap) aqiMap.setView([centerLat, centerLng], 12);
-
-          curLiveData = data;
-          curTimeIso = data?.time?.iso || '';
-          $('aqiUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-          renderHero(data);
-          renderForecast(data.forecast, parseInt(data.aqi) || 0);
-          loadNlpAdvice(data);
-          showLocationAqiPopup(lat, lng, data);
-          toast('Live AQI near your location loaded', 'success');
-        } else if (!(await fallbackToNearest())) {
-          toast('No live AQI near your location', 'error');
-        }
-      } catch (e) {
-        if (!(await fallbackToNearest())) {
-          toast('Unable to fetch AQI for your location', 'error');
-        }
-      } finally {
-        setTimeout(() => btnLocate.classList.remove('spinning'), 600);
+      const ok = await loadLiveFromCoords(lat, lng, 'your location');
+      if (!ok && !(await tryApproximate())) {
+        toast('Unable to fetch AQI for your location', 'error');
       }
-    }, err => {
-      const msg = err?.code === 1 ? 'Location permission denied' : 'Unable to get your location';
-      toast(msg, 'error');
-      btnLocate.classList.remove('spinning');
+      release();
+    }, async err => {
+      const msg = err?.code === 1 ? 'Location permission denied. Enable location and try again.' : 'Unable to get your location';
+      if (!(await tryApproximate())) {
+        toast(msg, 'error');
+      }
+      release();
     }, {
       enableHighAccuracy: true,
-      timeout: 12000,
+      timeout: 14000,
       maximumAge: 0
     });
   });
@@ -773,6 +929,7 @@ async function loadCity(city) {
   setActiveCityChip(city);
   // Always move visuals to selected city immediately, even if live data fails.
   applySelectedCityVisual(city, reqSeq);
+  loadAreaAqiList(city, reqSeq);
   try {
     const j = await fetchJsonNoCache(`/api/live/${encodeURIComponent(city)}`);
     console.log('loadCity() response', j);
@@ -795,6 +952,7 @@ async function loadCity(city) {
     renderForecast(j.data.forecast, parseInt(j.data.aqi) || 0);
     loadDonut();
     loadNlpAdvice(j.data, reqSeq);
+    loadAreaAqiList(j?.data?.city?.name || city, reqSeq);
   } catch (e) {
     console.error('loadCity() error', e);
     // Live API unavailable — use local CSV data
@@ -808,8 +966,17 @@ async function loadLocalAqi(cityOverride = null, reqSeq = null) {
   try {
     const cityToLoad = cityOverride || curCity;
     const qCity = cityToLoad ? `?city=${encodeURIComponent(cityToLoad)}` : '';
-    const d = await fetchJsonNoCache(`/api/current-aqi${qCity}`);
+    let d = await fetchJsonNoCache(`/api/current-aqi${qCity}`);
+    let usedLatestFallback = false;
     if (isStaleReq(reqSeq)) return;
+    if (d.error && cityToLoad) {
+      const latest = await fetchJsonNoCache('/api/current-aqi');
+      if (!latest.error) {
+        d = latest;
+        usedLatestFallback = true;
+        toast(`Live AQI unavailable for "${cityToLoad}". Showing latest available station data.`, 'info');
+      }
+    }
     if (d.error) {
       stabilityLog('Local AQI fallback unavailable', { cityToLoad, error: d.error });
       toast('Live data unavailable. Showing selected city visual only.', 'info');
@@ -817,7 +984,7 @@ async function loadLocalAqi(cityOverride = null, reqSeq = null) {
       return;
     }
     // Ignore fallback payloads that do not match the requested city.
-    if (cityToLoad) {
+    if (cityToLoad && !usedLatestFallback) {
       if (!isRequestedCityMatch(cityToLoad, d.city)) {
         console.warn('Ignoring mismatched /api/current-aqi payload', { cityToLoad, returnedCity: d.city });
         stabilityLog('Rejected mismatched fallback payload', { requested: cityToLoad, returned: d.city });
@@ -860,6 +1027,7 @@ async function loadLocalAqi(cityOverride = null, reqSeq = null) {
     renderForecast(null, aqi);
     loadDonut();
     loadNlpAdvice(curLiveData, reqSeq);
+    loadAreaAqiList(`${d.city || cityToLoad}`, reqSeq);
   } catch (e) {
     console.warn('loadLocalAqi() error', e);
   }

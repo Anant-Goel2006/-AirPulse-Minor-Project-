@@ -17,6 +17,7 @@
 <meta name="description" content="Monitor real-time AQI and air quality data. Live pollution levels updated every 5 minutes."/>
 <meta name="theme-color" content="#4BA9FF"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://images.unsplash.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
@@ -95,6 +96,15 @@
     <button class="city-chip" data-city="paris">Paris</button>
   </div>
 </div>
+
+<!-- ── AREA AQI LIST (AQI.IN STYLE) ─────────────────────────── -->
+<section class="area-live-panel" id="areaLivePanel">
+  <div class="area-live-head">
+    <h3 class="area-live-title">Area AQI (Low to High)</h3>
+    <p class="area-live-meta" id="areaAqiMeta">Loading locality AQI…</p>
+  </div>
+  <div class="area-live-list" id="areaAqiList"></div>
+</section>
 
 <!-- ── MAIN CONTENT ───────────────────────────────────────────── -->
 <main class="main-content">
