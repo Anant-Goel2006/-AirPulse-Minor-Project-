@@ -13,7 +13,7 @@
       "focalPoint": "center"
     },
     "bengaluru": {
-      "imageUrl": "/static/assets/hero/cities/bengaluru.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/bengaluru,city?lock=311",
       "focalPoint": "center"
     },
     "kolkata": {
@@ -21,11 +21,11 @@
       "focalPoint": "center"
     },
     "hyderabad": {
-      "imageUrl": "/static/assets/hero/cities/hyderabad.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/hyderabad,city?lock=991",
       "focalPoint": "center"
     },
     "chennai": {
-      "imageUrl": "/static/assets/hero/cities/chennai.webp",
+      "imageUrl": "https://loremflickr.com/3840/2160/chennai,city?lock=731",
       "focalPoint": "center"
     },
     "beijing": {

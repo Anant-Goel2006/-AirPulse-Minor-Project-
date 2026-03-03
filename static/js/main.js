@@ -15,6 +15,14 @@ const CATS = [
   { max:300, level:'Severe',     color:'#660099', bg:'#f3e8ff', textClr:'#fff' },
   { max:999, level:'Hazardous',  color:'#7e0023', bg:'#fde8e8', textClr:'#fff' },
 ];
+const LOCALITY_GUIDANCE_BY_LEVEL = {
+  good: 'Great for outdoor plans',
+  moderate: 'Sensitive groups take care',
+  poor: 'Limit long outdoor exposure',
+  unhealthy: 'Use a mask outdoors',
+  severe: 'Avoid outdoor exercise',
+  hazardous: 'Stay indoors if possible',
+};
 const POLL_CFG = {
   pm25:{ lbl:'PM₂.₅', unit:'μg/m³', max:300, color:'#e74c3c' },
   pm10:{ lbl:'PM₁₀',  unit:'μg/m³', max:420, color:'#e67e00' },
@@ -25,6 +33,11 @@ const POLL_CFG = {
 };
 
 const getCat = aqi => CATS.find(c => aqi <= c.max) || CATS[CATS.length-1];
+function getLocalityGuidance(aqi) {
+  const cat = getCat(Number(aqi));
+  const key = String(cat?.level || '').toLowerCase();
+  return LOCALITY_GUIDANCE_BY_LEVEL[key] || 'Follow local AQI precautions';
+}
 const $ = id => document.getElementById(id);
 const css = (k,v) => document.documentElement.style.setProperty(k,v);
 const fmtAqi = v => Math.round(v);
@@ -89,10 +102,10 @@ const COUNTRY_ALIASES = {
 const LOCAL_CITY_FALLBACK = {
   delhi: '/static/assets/hero/cities/delhi.webp',
   mumbai: '/static/assets/hero/cities/mumbai.webp',
-  bengaluru: '/static/assets/hero/cities/bengaluru.webp',
+  bengaluru: 'https://loremflickr.com/3840/2160/bengaluru,city?lock=311',
   kolkata: 'https://images.unsplash.com/photo-1536421469767-80559bb6f5e1?auto=format&fit=crop&w=3840&q=80',
-  hyderabad: '/static/assets/hero/cities/hyderabad.webp',
-  chennai: '/static/assets/hero/cities/chennai.webp',
+  hyderabad: 'https://loremflickr.com/3840/2160/hyderabad,city?lock=991',
+  chennai: 'https://loremflickr.com/3840/2160/chennai,city?lock=731',
   beijing: '/static/assets/hero/cities/beijing.webp',
   shanghai: '/static/assets/hero/cities/shanghai.webp',
   london: '/static/assets/hero/cities/london.webp',
@@ -497,11 +510,16 @@ function renderAreaAqiList(rows, centerName = '') {
     if (item.city && normalizeCityKey(item.city) !== normalizeCityKey(primary)) secondaryParts.push(item.city);
     if (item.country) secondaryParts.push(item.country);
     const secondary = secondaryParts.join(', ') || item.station;
+    const guidance = getLocalityGuidance(item.aqi);
+    const thumbSeed = slugifyCity(item.station || `${primary} ${item.city}`) || 'locality';
+    const thumbUrl = buildSeededHeroImage(thumbSeed);
     return `<button class="area-aqi-chip" data-uid="${escapeHtml(item.uid)}" data-station="${escapeHtml(item.station)}" data-display="${escapeHtml(primary)}" data-bghint="${escapeHtml(item.station)}" title="${escapeHtml(item.station)}">
+      <span class="area-aqi-thumb" style="background-image:url('${thumbUrl}')"></span>
       <span class="area-aqi-badge" style="background:${cat.color};color:${cat.textClr}">${Math.round(item.aqi)}</span>
       <span class="area-aqi-text">
         <span class="area-aqi-primary">${escapeHtml(primary)}</span>
         <span class="area-aqi-secondary">${escapeHtml(secondary)}</span>
+        <span class="area-aqi-guidance" style="color:${cat.color}">${escapeHtml(guidance)}</span>
       </span>
     </button>`;
   }).join('');

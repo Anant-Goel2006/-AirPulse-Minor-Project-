@@ -376,7 +376,7 @@ button,input,select { font-family:inherit; }
 .area-live-list::-webkit-scrollbar { display:none; }
 .area-aqi-chip {
   display:flex;
-  align-items:center;
+  align-items:flex-start;
   gap:8px;
   flex:0 0 auto;
   border:1px solid rgba(160,172,195,.35);
@@ -404,9 +404,20 @@ button,input,select { font-family:inherit; }
   font-weight:800;
   color:#fff;
 }
+.area-aqi-thumb {
+  width:44px;
+  height:30px;
+  border-radius:8px;
+  border:1px solid rgba(160,172,195,.45);
+  background-size:cover;
+  background-position:center;
+  background-repeat:no-repeat;
+  flex:0 0 auto;
+}
 .area-aqi-text {
   display:flex;
   flex-direction:column;
+  gap:1px;
   min-width:0;
 }
 .area-aqi-primary {
@@ -420,6 +431,13 @@ button,input,select { font-family:inherit; }
 .area-aqi-secondary {
   font-size:.68rem;
   color:#6b7280;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.area-aqi-guidance {
+  font-size:.64rem;
+  font-weight:700;
   white-space:nowrap;
   overflow:hidden;
   text-overflow:ellipsis;
