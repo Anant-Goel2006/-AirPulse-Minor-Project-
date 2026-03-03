@@ -1,0 +1,118 @@
+{
+  "default": {
+    "imageUrl": "/static/assets/hero/default.webp",
+    "focalPoint": "center"
+  },
+  "cities": {
+    "delhi": {
+      "imageUrl": "/static/assets/hero/cities/delhi.webp",
+      "focalPoint": "center"
+    },
+    "mumbai": {
+      "imageUrl": "/static/assets/hero/cities/mumbai.webp",
+      "focalPoint": "center"
+    },
+    "bengaluru": {
+      "imageUrl": "/static/assets/hero/cities/bengaluru.webp",
+      "focalPoint": "center"
+    },
+    "kolkata": {
+      "imageUrl": "/static/assets/hero/cities/kolkata.webp",
+      "focalPoint": "center"
+    },
+    "hyderabad": {
+      "imageUrl": "/static/assets/hero/cities/hyderabad.webp",
+      "focalPoint": "center"
+    },
+    "chennai": {
+      "imageUrl": "/static/assets/hero/cities/chennai.webp",
+      "focalPoint": "center"
+    },
+    "beijing": {
+      "imageUrl": "/static/assets/hero/cities/beijing.webp",
+      "focalPoint": "center"
+    },
+    "shanghai": {
+      "imageUrl": "/static/assets/hero/cities/shanghai.webp",
+      "focalPoint": "center"
+    },
+    "london": {
+      "imageUrl": "/static/assets/hero/cities/london.webp",
+      "focalPoint": "center"
+    },
+    "new-york": {
+      "imageUrl": "/static/assets/hero/cities/new-york.webp",
+      "focalPoint": "center"
+    },
+    "tokyo": {
+      "imageUrl": "/static/assets/hero/cities/tokyo.webp",
+      "focalPoint": "center"
+    },
+    "singapore": {
+      "imageUrl": "/static/assets/hero/cities/singapore.webp",
+      "focalPoint": "center"
+    },
+    "sydney": {
+      "imageUrl": "/static/assets/hero/cities/sydney.webp",
+      "focalPoint": "center"
+    },
+    "paris": {
+      "imageUrl": "/static/assets/hero/cities/paris.webp",
+      "focalPoint": "center"
+    },
+    "chicago": {
+      "imageUrl": "/static/assets/hero/cities/chicago.webp",
+      "focalPoint": "center"
+    },
+    "los-angeles": {
+      "imageUrl": "/static/assets/hero/cities/los-angeles.webp",
+      "focalPoint": "center"
+    }
+  },
+  "countries": {
+    "india": {
+      "imageUrl": "/static/assets/hero/countries/india.webp",
+      "focalPoint": "center"
+    },
+    "china": {
+      "imageUrl": "/static/assets/hero/countries/china.webp",
+      "focalPoint": "center"
+    },
+    "japan": {
+      "imageUrl": "/static/assets/hero/countries/japan.webp",
+      "focalPoint": "center"
+    },
+    "us": {
+      "imageUrl": "/static/assets/hero/countries/us.webp",
+      "focalPoint": "center"
+    },
+    "usa": {
+      "imageUrl": "/static/assets/hero/countries/usa.webp",
+      "focalPoint": "center"
+    },
+    "united-states": {
+      "imageUrl": "/static/assets/hero/countries/united-states.webp",
+      "focalPoint": "center"
+    },
+    "uk": {
+      "imageUrl": "/static/assets/hero/countries/uk.webp",
+      "focalPoint": "center"
+    },
+    "united-kingdom": {
+      "imageUrl": "/static/assets/hero/countries/united-kingdom.webp",
+      "focalPoint": "center"
+    },
+    "australia": {
+      "imageUrl": "/static/assets/hero/countries/australia.webp",
+      "focalPoint": "center"
+    },
+    "france": {
+      "imageUrl": "/static/assets/hero/countries/france.webp",
+      "focalPoint": "center"
+    },
+    "singapore": {
+      "imageUrl": "/static/assets/hero/countries/singapore.webp",
+      "focalPoint": "center"
+    }
+  }
+}
