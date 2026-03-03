@@ -31,6 +31,7 @@ const fmtAqi = v => Math.round(v);
 
 let curCity = 'delhi', curLiveData = null;
 let curCityDisplay = 'Delhi';
+let curHeroQueryHint = 'delhi';
 let trendChartInst = null, donutChartInst = null, forecastChartInst = null;
 let aqiMap = null, mapMarkers = [], markerCluster = null;
 let heroActiveLayer = 'primary', heroLoadedImage = '', heroUpdateSeq = 0;
@@ -42,7 +43,15 @@ let heroManifestPromise = null;
 let mapLoadSeq = 0;
 let mapMoveTimer = null;
 let areaListLoadSeq = 0;
+let areaSliderBound = false;
+let areaSliderSyncRaf = 0;
 const DEBUG_STABILITY = false;
+const AREA_CACHE_TTL_MS = 90 * 1000;
+const AREA_CACHE_MAX_ITEMS = 24;
+const areaListResponseCache = new Map();
+const areaListInFlight = new Map();
+const heroBgConfigCache = new Map();
+const heroImageLoadCache = new Map();
 
 function stabilityLog(msg, meta = null) {
   if (!DEBUG_STABILITY) return;
@@ -104,7 +113,6 @@ const CITY_BG_ALIASES = {
   apris: 'paris',
   nyc: 'new-york',
 };
-const REMOTE_BG_BASE = 'https://picsum.photos/seed';
 
 /* ── Toast ──────────────────────────────────────────────── */
 function toast(msg, type='info') {
@@ -313,11 +321,13 @@ function normalizeLoadCityInput(input) {
   if (input && typeof input === 'object') {
     const query = String(input.query ?? input.city ?? '').trim();
     const displayName = normalizeDisplayName(input.displayName ?? input.label ?? '');
-    return { query, displayName };
+    const bgHint = normalizeDisplayName(input.bgHint ?? input.backgroundHint ?? input.stationHint ?? '');
+    return { query, displayName, bgHint };
   }
   return {
     query: String(input || '').trim(),
     displayName: '',
+    bgHint: '',
   };
 }
 
@@ -349,6 +359,94 @@ function escapeHtml(raw) {
     .replace(/'/g, '&#39;');
 }
 
+function getAreaCacheKey(rawQuery) {
+  const normalized = normalizeCityKey(rawQuery);
+  return normalized || slugifyCity(rawQuery);
+}
+
+function getCachedAreaResponse(rawQuery) {
+  const key = getAreaCacheKey(rawQuery);
+  if (!key) return null;
+  const hit = areaListResponseCache.get(key);
+  if (!hit) return null;
+  if ((Date.now() - hit.ts) > AREA_CACHE_TTL_MS) {
+    areaListResponseCache.delete(key);
+    return null;
+  }
+  return hit.payload;
+}
+
+function storeAreaResponseCache(rawQuery, payload) {
+  const key = getAreaCacheKey(rawQuery);
+  if (!key || !payload) return;
+  areaListResponseCache.set(key, { ts: Date.now(), payload });
+  if (areaListResponseCache.size > AREA_CACHE_MAX_ITEMS) {
+    const firstKey = areaListResponseCache.keys().next().value;
+    if (firstKey) areaListResponseCache.delete(firstKey);
+  }
+}
+
+function getAreaSliderRefs() {
+  return {
+    listEl: $('areaAqiList'),
+    sliderEl: $('areaAqiSlider'),
+    prevEl: $('areaSlidePrev'),
+    nextEl: $('areaSlideNext'),
+  };
+}
+
+function syncAreaSliderControls() {
+  const { listEl, sliderEl, prevEl, nextEl } = getAreaSliderRefs();
+  if (!listEl || !sliderEl || !prevEl || !nextEl) return;
+
+  const maxScroll = Math.max(0, listEl.scrollWidth - listEl.clientWidth);
+  const canSlide = maxScroll > 2;
+  sliderEl.disabled = !canSlide;
+  prevEl.disabled = !canSlide || listEl.scrollLeft <= 1;
+  nextEl.disabled = !canSlide || listEl.scrollLeft >= maxScroll - 1;
+
+  if (!canSlide) {
+    sliderEl.value = '0';
+    return;
+  }
+
+  const pct = Math.max(0, Math.min(100, Math.round((listEl.scrollLeft / maxScroll) * 100)));
+  sliderEl.value = String(pct);
+}
+
+function scheduleAreaSliderSync() {
+  if (areaSliderSyncRaf) return;
+  areaSliderSyncRaf = requestAnimationFrame(() => {
+    areaSliderSyncRaf = 0;
+    syncAreaSliderControls();
+  });
+}
+
+function bindAreaSliderControls() {
+  if (areaSliderBound) return;
+  const { listEl, sliderEl, prevEl, nextEl } = getAreaSliderRefs();
+  if (!listEl || !sliderEl || !prevEl || !nextEl) return;
+
+  const scrollStep = () => Math.max(180, Math.round(listEl.clientWidth * 0.72));
+
+  prevEl.addEventListener('click', () => {
+    listEl.scrollBy({ left: -scrollStep(), behavior: 'smooth' });
+  });
+  nextEl.addEventListener('click', () => {
+    listEl.scrollBy({ left: scrollStep(), behavior: 'smooth' });
+  });
+  sliderEl.addEventListener('input', () => {
+    const maxScroll = Math.max(0, listEl.scrollWidth - listEl.clientWidth);
+    const ratio = Math.max(0, Math.min(1, Number(sliderEl.value) / 100));
+    listEl.scrollLeft = maxScroll * ratio;
+  });
+  listEl.addEventListener('scroll', scheduleAreaSliderSync, { passive: true });
+  window.addEventListener('resize', scheduleAreaSliderSync, { passive: true });
+
+  areaSliderBound = true;
+  scheduleAreaSliderSync();
+}
+
 function renderAreaAqiState(msg) {
   const listEl = $('areaAqiList');
   const metaEl = $('areaAqiMeta');
@@ -357,6 +455,7 @@ function renderAreaAqiState(msg) {
   if (metaEl && !msg.toLowerCase().includes('loading')) {
     metaEl.textContent = '';
   }
+  scheduleAreaSliderSync();
 }
 
 function renderAreaAqiList(rows, centerName = '') {
@@ -398,7 +497,7 @@ function renderAreaAqiList(rows, centerName = '') {
     if (item.city && normalizeCityKey(item.city) !== normalizeCityKey(primary)) secondaryParts.push(item.city);
     if (item.country) secondaryParts.push(item.country);
     const secondary = secondaryParts.join(', ') || item.station;
-    return `<button class="area-aqi-chip" data-uid="${escapeHtml(item.uid)}" data-station="${escapeHtml(item.station)}" data-display="${escapeHtml(primary)}" title="${escapeHtml(item.station)}">
+    return `<button class="area-aqi-chip" data-uid="${escapeHtml(item.uid)}" data-station="${escapeHtml(item.station)}" data-display="${escapeHtml(primary)}" data-bghint="${escapeHtml(item.station)}" title="${escapeHtml(item.station)}">
       <span class="area-aqi-badge" style="background:${cat.color};color:${cat.textClr}">${Math.round(item.aqi)}</span>
       <span class="area-aqi-text">
         <span class="area-aqi-primary">${escapeHtml(primary)}</span>
@@ -412,29 +511,50 @@ function renderAreaAqiList(rows, centerName = '') {
       const uid = String(btn.dataset.uid || '').trim();
       const station = String(btn.dataset.station || '').trim();
       const displayName = normalizeDisplayName(btn.dataset.display || station);
+      const bgHint = normalizeDisplayName(btn.dataset.bghint || station || displayName);
       if (uid) {
-        loadCity({ query: `@${uid}`, displayName });
+        loadCity({ query: `@${uid}`, displayName, bgHint });
         return;
       }
-      if (station) loadCity({ query: station, displayName });
+      if (station) loadCity({ query: station, displayName, bgHint });
     });
   });
+  scheduleAreaSliderSync();
 }
 
 async function loadAreaAqiList(cityQuery, reqSeq = null) {
   const query = String(cityQuery || curCity || '').trim();
   if (!query) return;
+  bindAreaSliderControls();
   const thisSeq = ++areaListLoadSeq;
+  const cached = getCachedAreaResponse(query);
+  if (cached) {
+    if (thisSeq !== areaListLoadSeq) return;
+    if (isStaleReq(reqSeq)) return;
+    renderAreaAqiList(cached.areas, cached.centerName || query);
+    return;
+  }
   renderAreaAqiState('Loading locality AQI...');
   try {
-    const r = await fetchJsonNoCache(`/api/live/areas/${encodeURIComponent(query)}?limit=140&radius_km=32`);
+    const cacheKey = getAreaCacheKey(query);
+    let fetchPromise = areaListInFlight.get(cacheKey);
+    if (!fetchPromise) {
+      fetchPromise = fetchJsonNoCache(`/api/live/areas/${encodeURIComponent(query)}?limit=140&radius_km=32`)
+        .finally(() => {
+          areaListInFlight.delete(cacheKey);
+        });
+      areaListInFlight.set(cacheKey, fetchPromise);
+    }
+    const r = await fetchPromise;
     if (thisSeq !== areaListLoadSeq) return;
     if (isStaleReq(reqSeq)) return;
     if (r?.status !== 'ok' || !Array.isArray(r?.areas)) {
       renderAreaAqiState('Area AQI is temporarily unavailable.');
       return;
     }
-    renderAreaAqiList(r.areas, r?.city?.name || query);
+    const centerName = String(r?.city?.name || query).trim();
+    storeAreaResponseCache(query, { areas: r.areas, centerName });
+    renderAreaAqiList(r.areas, centerName);
   } catch (e) {
     if (thisSeq !== areaListLoadSeq) return;
     renderAreaAqiState('Area AQI is temporarily unavailable.');
@@ -483,33 +603,105 @@ function resolveCountryKey(countryName) {
   return COUNTRY_ALIASES[raw] || raw;
 }
 
+function hashSeed(raw) {
+  const txt = String(raw || '').trim();
+  let h = 0;
+  for (let i = 0; i < txt.length; i += 1) {
+    h = ((h << 5) - h) + txt.charCodeAt(i);
+    h |= 0;
+  }
+  return Math.abs(h);
+}
+
+function buildSeededHeroImage(seed) {
+  const h = hashSeed(seed);
+  const hueA = h % 360;
+  const hueB = (hueA + 42 + (h % 19)) % 360;
+  const hueC = (hueA + 214 + (h % 23)) % 360;
+  const x1 = 15 + (h % 70);
+  const y1 = 12 + (h % 60);
+  const x2 = 62 + (h % 30);
+  const y2 = 66 + (h % 24);
+  const svg = `
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1920 1080' preserveAspectRatio='xMidYMid slice'>
+  <defs>
+    <linearGradient id='g' x1='0%' y1='0%' x2='100%' y2='100%'>
+      <stop offset='0%' stop-color='hsl(${hueA}, 76%, 58%)'/>
+      <stop offset='48%' stop-color='hsl(${hueB}, 72%, 48%)'/>
+      <stop offset='100%' stop-color='hsl(${hueC}, 74%, 33%)'/>
+    </linearGradient>
+    <radialGradient id='r1' cx='${x1}%' cy='${y1}%' r='56%'>
+      <stop offset='0%' stop-color='rgba(255,255,255,.34)'/>
+      <stop offset='100%' stop-color='rgba(255,255,255,0)'/>
+    </radialGradient>
+    <radialGradient id='r2' cx='${x2}%' cy='${y2}%' r='62%'>
+      <stop offset='0%' stop-color='rgba(255,255,255,.22)'/>
+      <stop offset='100%' stop-color='rgba(255,255,255,0)'/>
+    </radialGradient>
+  </defs>
+  <rect width='1920' height='1080' fill='url(#g)'/>
+  <rect width='1920' height='1080' fill='url(#r1)'/>
+  <rect width='1920' height='1080' fill='url(#r2)'/>
+  <g opacity='.18'>
+    <circle cx='1540' cy='220' r='210' fill='rgba(255,255,255,.42)'/>
+    <circle cx='380' cy='900' r='260' fill='rgba(255,255,255,.34)'/>
+    <circle cx='1120' cy='760' r='180' fill='rgba(255,255,255,.26)'/>
+  </g>
+</svg>`.trim();
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
 async function resolveHeroBg(cityName, countryName, queryHint = '') {
+  const cityText = String(cityName || '').trim();
+  const countryText = String(countryName || '').trim();
+  const hintText = String(queryHint || '').trim();
+  const countryKey = resolveCountryKey(countryText);
+  const cacheKey = `${slugifyCity(cityText)}|${countryKey}|${slugifyCity(hintText)}`;
+  const cached = heroBgConfigCache.get(cacheKey);
+  if (cached) return cached;
+
   const manifest = await loadHeroManifest();
+  const parsedHint = parseMapStationLocation(hintText, cityText);
+  const hintedCity = String(parsedHint?.city || '').trim();
   const cityKeyCandidates = [
-    resolveCityKey(cityName),
-    resolveCityKey(queryHint),
-    resolveCityKey(parseCityCountry(queryHint, queryHint).city),
+    resolveCityKey(cityText),
+    resolveCityKey(hintedCity),
+    resolveCityKey(hintText),
+    resolveCityKey(parseCityCountry(hintText, hintText).city),
   ].filter(Boolean);
   const cityKey = cityKeyCandidates[0] || '';
-  const countryKey = resolveCountryKey(countryName);
+  let resolved = null;
 
   if (cityKey && FORCED_HERO_IMAGE_OVERRIDES[cityKey]) {
-    return { imageUrl: FORCED_HERO_IMAGE_OVERRIDES[cityKey], focalPoint: 'center' };
+    resolved = { imageUrl: FORCED_HERO_IMAGE_OVERRIDES[cityKey], focalPoint: 'center' };
   }
-  if (cityKey && manifest?.cities?.[cityKey]?.imageUrl) return manifest.cities[cityKey];
-  if (cityKey && LOCAL_CITY_FALLBACK[cityKey]) {
-    return { imageUrl: LOCAL_CITY_FALLBACK[cityKey], focalPoint: 'center' };
+  if (!resolved && cityKey && manifest?.cities?.[cityKey]?.imageUrl) resolved = manifest.cities[cityKey];
+  if (!resolved && cityKey && LOCAL_CITY_FALLBACK[cityKey]) {
+    resolved = { imageUrl: LOCAL_CITY_FALLBACK[cityKey], focalPoint: 'center' };
   }
-  if (countryKey && manifest?.countries?.[countryKey]?.imageUrl) return manifest.countries[countryKey];
-  if (manifest?.default?.imageUrl) return manifest.default;
-  const remoteSeed = cityKey || countryKey || slugifyCity(queryHint) || slugifyCity(cityName) || slugifyCity(countryName);
-  if (remoteSeed) {
-    return {
-      imageUrl: `${REMOTE_BG_BASE}/aqi-${encodeURIComponent(remoteSeed)}/3840/2160`,
-      focalPoint: 'center'
-    };
+
+  if (!resolved) {
+    const hintSeed = slugifyCity(hintText) || slugifyCity(hintedCity);
+    const citySeed = slugifyCity(cityText);
+    const remoteSeed = hintSeed || citySeed || countryKey || slugifyCity(countryText);
+    if (remoteSeed) {
+      resolved = {
+        imageUrl: buildSeededHeroImage(remoteSeed),
+        focalPoint: 'center'
+      };
+    }
   }
-  return FALLBACK_BG;
+
+  if (!resolved && countryKey && manifest?.countries?.[countryKey]?.imageUrl) resolved = manifest.countries[countryKey];
+  if (!resolved && manifest?.default?.imageUrl) resolved = manifest.default;
+  if (!resolved) resolved = FALLBACK_BG;
+
+  heroBgConfigCache.set(cacheKey, resolved);
+  if (heroBgConfigCache.size > 120) {
+    const firstKey = heroBgConfigCache.keys().next().value;
+    if (firstKey) heroBgConfigCache.delete(firstKey);
+  }
+  return resolved;
 }
 
 function cacheBustedImageUrl(url) {
@@ -521,14 +713,23 @@ function cacheBustedImageUrl(url) {
 }
 
 function preloadBackgroundImage(url) {
-  return new Promise(resolve => {
-    const safeUrl = cacheBustedImageUrl(url);
-    if (!safeUrl) { resolve(''); return; }
+  const safeUrl = cacheBustedImageUrl(url);
+  if (!safeUrl) return Promise.resolve('');
+  const cachedPromise = heroImageLoadCache.get(safeUrl);
+  if (cachedPromise) return cachedPromise;
+
+  const loadPromise = new Promise(resolve => {
     const img = new Image();
     img.onload = () => resolve(safeUrl);
     img.onerror = () => resolve('');
     img.src = safeUrl;
   });
+  heroImageLoadCache.set(safeUrl, loadPromise);
+  if (heroImageLoadCache.size > 180) {
+    const firstKey = heroImageLoadCache.keys().next().value;
+    if (firstKey) heroImageLoadCache.delete(firstKey);
+  }
+  return loadPromise;
 }
 
 function setHeroLayerImage(el, imageUrl, focalPoint='center') {
@@ -707,7 +908,7 @@ async function updateCinematicHero({ cityName, country, aqi, level, updatedAt, t
   updateHeroTint(cat);
 
   const mySeq = ++heroUpdateSeq;
-  const bgCfg = await resolveHeroBg(displayCity, displayCountry, curCity);
+  const bgCfg = await resolveHeroBg(displayCity, displayCountry, curHeroQueryHint || curCityDisplay || curCity);
   if (isStaleReq(reqSeq)) return;
   let imageUrl = await preloadBackgroundImage(bgCfg.imageUrl);
   let focalPoint = bgCfg.focalPoint || 'center';
@@ -733,6 +934,8 @@ function getDisplayedAqiFallback() {
 
 function applySelectedCityVisual(city, reqSeq) {
   const loc = parseCityCountry(city, city);
+  const heroHint = normalizeDisplayName(city || loc.city || curCityDisplay || curCity);
+  if (heroHint) curHeroQueryHint = heroHint;
   const aqi = getDisplayedAqiFallback();
   const level = $('gaugeLevel')?.textContent || getCat(aqi).level;
   updateCinematicHero({
@@ -787,6 +990,7 @@ async function loadLiveFromCoords(lat, lng, modeLabel = 'your location') {
       await loadCity({
         query: uid ? `@${uid}` : (stationName || `geo:${latStr};${lngStr}`),
         displayName: normalizeDisplayName(stationName),
+        bgHint: normalizeDisplayName(stationName),
       });
       const stationLat = Number(nearby?.nearest?.lat ?? nearby?.data?.city?.geo?.[0]);
       const stationLng = Number(nearby?.nearest?.lng ?? nearby?.data?.city?.geo?.[1]);
@@ -805,7 +1009,11 @@ async function loadLiveFromCoords(lat, lng, modeLabel = 'your location') {
     const geo = await fetchJsonNoCache(`/api/live/geo/${latStr}/${lngStr}`);
     if (geo?.status === 'ok' && geo?.data) {
       const stationName = geo?.data?.city?.name || `geo:${latStr};${lngStr}`;
-      await loadCity(stationName);
+      await loadCity({
+        query: stationName,
+        displayName: normalizeDisplayName(stationName),
+        bgHint: normalizeDisplayName(stationName),
+      });
       const stationLat = Number(geo?.data?.city?.geo?.[0]);
       const stationLng = Number(geo?.data?.city?.geo?.[1]);
       if (aqiMap && Number.isFinite(stationLat) && Number.isFinite(stationLng)) {
@@ -1054,6 +1262,7 @@ async function doSearch(q) {
         loadCity({
           query: uid ? `@${uid}` : stationName,
           displayName: normalizeDisplayName(stationName),
+          bgHint: normalizeDisplayName(stationName),
         });
         searchDropdown.classList.remove('show');
         if (searchInput) searchInput.value = '';
@@ -1068,13 +1277,15 @@ async function doSearch(q) {
 
 /* ── Load city ──────────────────────────────────────────── */
 async function loadCity(cityInput) {
-  const { query: city, displayName } = normalizeLoadCityInput(cityInput);
+  const { query: city, displayName, bgHint } = normalizeLoadCityInput(cityInput);
   if (!city) return;
   console.log('loadCity()', city, displayName || '');
   const reqSeq = ++cityLoadSeq;
   const previewName = displayName || normalizeDisplayName(isUidQuery(city) ? curCityDisplay : city) || city;
+  const resolvedBgHint = normalizeDisplayName(bgHint || displayName || previewName || city);
   curCity = city;
   curCityDisplay = normalizeDisplayName(previewName) || curCityDisplay || city;
+  if (resolvedBgHint) curHeroQueryHint = resolvedBgHint;
   setActiveCityChip(previewName);
   // Avoid optimistic hero repaint for station/UID loads to prevent flicker.
   const shouldOptimisticVisual = !displayName && !isUidQuery(city);
@@ -1102,6 +1313,10 @@ async function loadCity(cityInput) {
     if (!displayName) {
       const liveLabel = normalizeDisplayName(j?.data?.city?.name || '');
       if (liveLabel) curCityDisplay = liveLabel;
+    }
+    if (!bgHint) {
+      const liveHint = normalizeDisplayName(j?.data?.city?.name || curCityDisplay || previewName);
+      if (liveHint) curHeroQueryHint = liveHint;
     }
     renderHero(j.data, reqSeq, displayName || curCityDisplay || previewName);
     const liveLat = Number(j.data?.city?.geo?.[0]);
@@ -1181,7 +1396,10 @@ async function loadLocalAqi(cityOverride = null, reqSeq = null) {
     }
     $('aqiUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
     const fallbackLabel = normalizeDisplayName(d.city || cityToLoad);
-    if (fallbackLabel) curCityDisplay = fallbackLabel;
+    if (fallbackLabel) {
+      curCityDisplay = fallbackLabel;
+      curHeroQueryHint = fallbackLabel;
+    }
     updateHeroUI(d.city, d.country, aqi, cat, d.description, reqSeq);
     updatePollutants(d.pollutants, d.city);
     updateWeather(d.weather);
@@ -1200,6 +1418,7 @@ function renderHero(data, reqSeq = null, displayNameHint = '') {
   const cat = getCat(aqi);
   const loc = parseCityCountry(data.city?.name || curCity, curCity);
   const hintedCity = normalizeDisplayName(displayNameHint);
+  if (hintedCity) curHeroQueryHint = hintedCity;
   curTimeIso = data?.time?.iso || curTimeIso || '';
   updateHeroUI(hintedCity || loc.city, loc.country, aqi, cat, cat.text || '', reqSeq);
 
@@ -1846,6 +2065,7 @@ setInterval(() => {
 
   try {
     initCinematicHero();
+    bindAreaSliderControls();
     await withTimeout(loadHeroManifest(), 2500);
 
     // attempt to load critical pieces but don't hang indefinitely

@@ -103,6 +103,15 @@
     <h3 class="area-live-title">Area AQI (Low to High)</h3>
     <p class="area-live-meta" id="areaAqiMeta">Loading locality AQI…</p>
   </div>
+  <div class="area-live-controls" id="areaAqiControls" aria-label="Area AQI slider controls">
+    <button class="area-slide-btn" id="areaSlidePrev" type="button" aria-label="Scroll localities left">
+      <i class="fa-solid fa-chevron-left"></i>
+    </button>
+    <input class="area-slide-range" id="areaAqiSlider" type="range" min="0" max="100" value="0" step="1" aria-label="Slide localities">
+    <button class="area-slide-btn" id="areaSlideNext" type="button" aria-label="Scroll localities right">
+      <i class="fa-solid fa-chevron-right"></i>
+    </button>
+  </div>
   <div class="area-live-list" id="areaAqiList"></div>
 </section>
 
