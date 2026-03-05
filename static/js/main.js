@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════
    main.js — AQI Dashboard
    Live data from /api/live/<city> (Flask → WAQI proxy)
-   Historical from /api/* (CSV-backed)
+   Analytics data from /api/* live snapshot/history endpoints
    ═══════════════════════════════════════════════════════ */
 
 'use strict';
@@ -61,10 +61,13 @@ let areaSliderSyncRaf = 0;
 const DEBUG_STABILITY = false;
 const AREA_CACHE_TTL_MS = 90 * 1000;
 const AREA_CACHE_MAX_ITEMS = 24;
+const LIVE_UI_REFRESH_MS = 45 * 1000;
+const OVERVIEW_REFRESH_MS = 5 * 60 * 1000;
 const areaListResponseCache = new Map();
 const areaListInFlight = new Map();
 const heroBgConfigCache = new Map();
 const heroImageLoadCache = new Map();
+const liveSnapshotCache = new Map();
 
 function stabilityLog(msg, meta = null) {
   if (!DEBUG_STABILITY) return;
@@ -158,19 +161,52 @@ function withTimeout(promise, ms=5000) {
 
 async function fetchJsonNoCache(url) {
   const u = url.includes('?') ? `${url}&_=${Date.now()}` : `${url}?_=${Date.now()}`;
-  const r = await fetch(u, { cache: 'no-store' });
-  return r.json();
+  try {
+    const r = await fetch(u, { cache: 'no-store' });
+    const ctype = String(r.headers?.get('content-type') || '').toLowerCase();
+
+    if (!r.ok) {
+      let details = '';
+      try {
+        if (ctype.includes('application/json')) {
+          const j = await r.json();
+          details = String(j?.error || j?.data || '').trim();
+        } else {
+          details = String(await r.text()).trim().slice(0, 200);
+        }
+      } catch {}
+      return { error: `HTTP ${r.status}${details ? `: ${details}` : ''}`, status: r.status };
+    }
+
+    if (!ctype.includes('application/json')) {
+      let raw = '';
+      try { raw = String(await r.text()).slice(0, 200); } catch {}
+      return { error: 'Non-JSON response from server', status: r.status, raw };
+    }
+
+    return await r.json();
+  } catch (e) {
+    return { error: String(e?.message || e || 'Network request failed'), status: 0 };
+  }
 }
 
 // global error capture
 window.addEventListener('error', e => {
-  console.error('Global error:', e.error || e.message);
+  const msg = String(e?.message || '');
+  const src = String(e?.filename || '');
+  const isCrossOriginScriptError = (!src && msg.toLowerCase() === 'script error.');
+  const isThirdPartySource = !!src && !src.startsWith(window.location.origin) && !src.startsWith('/');
+  console.error('Global error:', e.error || e.message, src || '');
   hideLoading();
+  if (isCrossOriginScriptError || isThirdPartySource) return;
   toast('An unexpected error occurred. See console.', 'error');
 });
 window.addEventListener('unhandledrejection', ev => {
+  const reasonText = String(ev?.reason?.message || ev?.reason || '');
+  const isNetworkNoise = /failed to fetch|networkerror|load failed|timeout/i.test(reasonText);
   console.error('Unhandled rejection:', ev.reason);
   hideLoading();
+  if (isNetworkNoise) return;
   toast('An unexpected error occurred. See console.', 'error');
 });
 
@@ -328,6 +364,17 @@ function isUidQuery(raw) {
   return /^@?\d+$/.test(String(raw || '').trim());
 }
 
+function isDirectCityQuery(raw) {
+  const txt = String(raw || '').trim().toLowerCase();
+  if (!txt) return false;
+  if (isUidQuery(txt)) return false;
+  if (txt.startsWith('geo:')) return false;
+  if (txt.includes(',')) return false;
+  if (/\d/.test(txt)) return false;
+  const stationHints = ['station', 'road', 'rd', 'sector', 'block', 'phase', 'airport', 'industrial', 'college', 'hospital'];
+  return !stationHints.some(h => txt.includes(h));
+}
+
 function normalizeDisplayName(raw) {
   const cleaned = cleanPlaceToken(String(raw || '').trim());
   if (!cleaned || isUidQuery(cleaned)) return '';
@@ -365,6 +412,62 @@ function resolveLiveAqi(data, fallbackValue = null) {
     if (Number.isFinite(parsed)) return parsed;
   }
   return Number.isFinite(fallbackValue) ? fallbackValue : null;
+}
+
+function snapshotKey(raw) {
+  const normalized = normalizeCityKey(raw);
+  if (normalized) return normalized;
+  return String(raw || '').trim().toLowerCase();
+}
+
+function clonePayloadSafe(payload) {
+  try {
+    return JSON.parse(JSON.stringify(payload));
+  } catch {
+    return null;
+  }
+}
+
+function rememberLiveSnapshot(queryKeys, payload) {
+  if (!payload || typeof payload !== 'object') return;
+  const copy = clonePayloadSafe(payload);
+  if (!copy) return;
+  const keys = Array.isArray(queryKeys) ? queryKeys : [queryKeys];
+  keys.forEach(raw => {
+    const key = snapshotKey(raw);
+    if (!key) return;
+    liveSnapshotCache.set(key, copy);
+  });
+  if (liveSnapshotCache.size > 40) {
+    const firstKey = liveSnapshotCache.keys().next().value;
+    if (firstKey) liveSnapshotCache.delete(firstKey);
+  }
+}
+
+function getLiveSnapshot(queryKeys) {
+  const keys = Array.isArray(queryKeys) ? queryKeys : [queryKeys];
+  for (const raw of keys) {
+    const key = snapshotKey(raw);
+    if (!key) continue;
+    const hit = liveSnapshotCache.get(key);
+    if (hit) {
+      const copy = clonePayloadSafe(hit);
+      if (copy) return copy;
+    }
+  }
+  return null;
+}
+
+function extractLivePollutants(data) {
+  const iaqi = data?.iaqi || {};
+  const out = {};
+  Object.keys(POLL_CFG).forEach(key => {
+    const node = iaqi?.[key];
+    const raw = (node && typeof node === 'object') ? node.v : node;
+    const parsed = Number.parseFloat(raw);
+    out[key] = Number.isFinite(parsed) ? parsed : null;
+  });
+  return out;
 }
 
 function escapeHtml(raw) {
@@ -488,9 +591,9 @@ function renderAreaAqiList(rows, centerName = '') {
     .map(item => ({
       uid: item?.uid != null ? String(item.uid).replace(/[^\d]/g, '') : '',
       station: String(item?.station_name || '').trim(),
-      area: titleCaseWords(cleanPlaceToken(item?.area || '')),
-      city: titleCaseWords(cleanPlaceToken(item?.city || '')),
-      country: titleCaseWords(cleanPlaceToken(item?.country || '')),
+      area: normalizeDisplayName(cleanPlaceToken(item?.area || '')),
+      city: normalizeDisplayName(cleanPlaceToken(item?.city || '')),
+      country: normalizeDisplayName(cleanPlaceToken(item?.country || '')),
       aqi: Number(item?.aqi),
       distance: Number(item?.distance_km),
     }))
@@ -1305,6 +1408,27 @@ async function doSearch(q) {
   }
 }
 
+function applyCachedLiveSnapshot(snapshot, reqSeq, displayNameHint = '') {
+  if (!snapshot || isStaleReq(reqSeq)) return false;
+  curLiveData = snapshot;
+  const aqi = resolveLiveAqi(curLiveData, getDisplayedAqiFallback());
+  if (Number.isFinite(aqi)) curLiveData.aqi = aqi;
+  curTimeIso = curLiveData?.time?.iso || curTimeIso || '';
+  if ($('aqiUpdated')) $('aqiUpdated').textContent = `Updated: ${new Date().toLocaleTimeString()} (cached live)`;
+
+  const liveLat = Number(curLiveData?.city?.geo?.[0]);
+  const liveLng = Number(curLiveData?.city?.geo?.[1]);
+  if (aqiMap && Number.isFinite(liveLat) && Number.isFinite(liveLng)) {
+    aqiMap.setView([liveLat, liveLng], Math.max(aqiMap.getZoom(), 10));
+  }
+
+  renderHero(curLiveData, reqSeq, displayNameHint || curCityDisplay || '');
+  renderForecast(curLiveData?.forecast, Number.isFinite(aqi) ? aqi : 0);
+  loadDonut();
+  loadNlpAdvice(curLiveData, reqSeq);
+  return true;
+}
+
 /* ── Load city ──────────────────────────────────────────── */
 async function loadCity(cityInput) {
   const { query: city, displayName, bgHint } = normalizeLoadCityInput(cityInput);
@@ -1322,14 +1446,19 @@ async function loadCity(cityInput) {
   if (shouldOptimisticVisual) {
     applySelectedCityVisual(previewName, reqSeq);
   }
+  const cachedSnapshot = getLiveSnapshot([city, displayName, bgHint, previewName, curCityDisplay]);
   loadAreaAqiList(city, reqSeq);
   try {
-    const j = await fetchJsonNoCache(`/api/live/${encodeURIComponent(city)}`);
+    const j = await fetchJsonNoCache(`/api/live/${encodeURIComponent(city)}?fresh=1`);
     console.log('loadCity() response', j);
     if (isStaleReq(reqSeq)) return;
     if (j.status !== 'ok') {
       console.warn('live API unavailable for', city, j);
-      toast(`Live AQI unavailable for "${city}". Showing local data.`, 'info');
+      if (applyCachedLiveSnapshot(cachedSnapshot, reqSeq, displayName || previewName)) {
+        toast(`Live update failed for "${city}". Showing latest real-time snapshot.`, 'info');
+        return;
+      }
+      toast(`Live AQI unavailable for "${city}". Showing latest live snapshot fallback.`, 'info');
       await loadLocalAqi(city, reqSeq);
       return;
     }
@@ -1339,15 +1468,19 @@ async function loadCity(cityInput) {
       curLiveData.aqi = resolvedAqi;
     }
     curTimeIso = j.data?.time?.iso || '';
-    $('aqiUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-    if (!displayName) {
+    if ($('aqiUpdated')) $('aqiUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+    if (!displayName && !isDirectCityQuery(city)) {
       const liveLabel = normalizeDisplayName(j?.data?.city?.name || '');
       if (liveLabel) curCityDisplay = liveLabel;
     }
-    if (!bgHint) {
+    if (!bgHint && !isDirectCityQuery(city)) {
       const liveHint = normalizeDisplayName(j?.data?.city?.name || curCityDisplay || previewName);
       if (liveHint) curHeroQueryHint = liveHint;
     }
+    rememberLiveSnapshot(
+      [city, displayName, bgHint, previewName, curCityDisplay, j?.data?.city?.name],
+      curLiveData
+    );
     renderHero(j.data, reqSeq, displayName || curCityDisplay || previewName);
     const liveLat = Number(j.data?.city?.geo?.[0]);
     const liveLng = Number(j.data?.city?.geo?.[1]);
@@ -1357,15 +1490,26 @@ async function loadCity(cityInput) {
     renderForecast(j.data.forecast, Number.isFinite(resolvedAqi) ? resolvedAqi : 0);
     loadDonut();
     loadNlpAdvice(j.data, reqSeq);
+    const analyticsCity = normalizeDisplayName(
+      parseCityCountry(j?.data?.city?.name || curCityDisplay || city, curCityDisplay || city).city
+    ) || curCityDisplay || city;
+    loadTrend(analyticsCity).catch(() => {});
+    loadHeatmap(analyticsCity).catch(() => {});
+    loadStats();
+    loadRanking();
   } catch (e) {
     console.error('loadCity() error', e);
-    // Live API unavailable — use local CSV data
     if (isStaleReq(reqSeq)) return;
+    if (applyCachedLiveSnapshot(cachedSnapshot, reqSeq, displayName || previewName)) {
+      toast(`Live update failed for "${city}". Showing latest real-time snapshot.`, 'info');
+      return;
+    }
+    // Live API unavailable — use normalized live snapshot endpoint
     await loadLocalAqi(city, reqSeq);
   }
 }
 
-/* ── Fallback: local CSV data ───────────────────────────── */
+/* ── Fallback: normalized live snapshot endpoint ───────── */
 async function loadLocalAqi(cityOverride = null, reqSeq = null) {
   try {
     const cityToLoad = cityOverride || curCity;
@@ -1424,7 +1568,7 @@ async function loadLocalAqi(cityOverride = null, reqSeq = null) {
     if (aqiMap && Number.isFinite(fbLat) && Number.isFinite(fbLng)) {
       aqiMap.setView([fbLat, fbLng], Math.max(aqiMap.getZoom(), 9));
     }
-    $('aqiUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+    if ($('aqiUpdated')) $('aqiUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
     const fallbackLabel = normalizeDisplayName(d.city || cityToLoad);
     if (fallbackLabel) {
       curCityDisplay = fallbackLabel;
@@ -1437,6 +1581,11 @@ async function loadLocalAqi(cityOverride = null, reqSeq = null) {
     loadDonut();
     loadNlpAdvice(curLiveData, reqSeq);
     loadAreaAqiList(`${d.city || cityToLoad}`, reqSeq);
+    const analyticsCity = normalizeDisplayName(d.city || cityToLoad || curCityDisplay || curCity) || (d.city || cityToLoad || curCity);
+    loadTrend(analyticsCity).catch(() => {});
+    loadHeatmap(analyticsCity).catch(() => {});
+    loadStats();
+    loadRanking();
   } catch (e) {
     console.warn('loadLocalAqi() error', e);
   }
@@ -1465,30 +1614,43 @@ function updateHeroUI(cityName, country, aqi, cat, desc, reqSeq = null) {
   if (typeof setAqiBackground === 'function') setAqiBackground(cat);
 
   // Header card
-  $('aqiHeroCard').style.borderTopColor = cat.color;
-  $('aqiCityName').textContent = cityName;
+  const heroCard = $('aqiHeroCard');
+  const cityNameEl = $('aqiCityName');
+  const cityCountryEl = $('aqiCityCountry');
+  if (heroCard) heroCard.style.borderTopColor = cat.color;
+  if (cityNameEl) cityNameEl.textContent = cityName;
   const countryText = String(country || '').trim();
-  $('aqiCityCountry').textContent = (countryText && countryText !== '—') ? countryText : cityName;
+  if (cityCountryEl) cityCountryEl.textContent = (countryText && countryText !== '—') ? countryText : cityName;
 
   // Gauge
-  $('gaugeValue').textContent = aqi;
-  $('gaugeValue').style.color = cat.color;
-  $('gaugeLevel').textContent = cat.level;
-  $('gaugeLevel').style.color = cat.color;
+  const gaugeValueEl = $('gaugeValue');
+  const gaugeLevelEl = $('gaugeLevel');
+  if (gaugeValueEl) {
+    gaugeValueEl.textContent = aqi;
+    gaugeValueEl.style.color = cat.color;
+  }
+  if (gaugeLevelEl) {
+    gaugeLevelEl.textContent = cat.level;
+    gaugeLevelEl.style.color = cat.color;
+  }
 
   // Gauge arc — circumference = 2π×85 ≈ 534
   const circ = 534;
   const pct  = Math.min(aqi / 500, 1);
   const offset = circ - circ * pct;
   const arc = $('gaugeProgress');
-  arc.style.strokeDashoffset = offset;
-  arc.setAttribute('stroke', cat.color);
+  if (arc) {
+    arc.style.strokeDashoffset = offset;
+    arc.setAttribute('stroke', cat.color);
+  }
 
   // Scale needle
-  $('scaleNeedle').style.left = Math.min(pct * 100, 97) + '%';
+  const needle = $('scaleNeedle');
+  if (needle) needle.style.left = Math.min(pct * 100, 97) + '%';
 
   // Description
-  $('aqiDescText').textContent = desc || cat.text || '';
+  const descTextEl = $('aqiDescText');
+  if (descTextEl) descTextEl.textContent = desc || cat.text || '';
 
   // AQI description bg
   const descEl = document.querySelector('.aqi-description');
@@ -1770,9 +1932,25 @@ function renderForecast(forecast, curAqi) {
 }
 
 /* ── Trend Chart ────────────────────────────────────────── */
-async function loadTrend(city) {
+function getRequestedTrendCity(explicitCity = undefined) {
+  if (typeof explicitCity === 'string') {
+    const normalized = explicitCity.trim();
+    if (normalized) return normalized;
+    return '';
+  }
+  const sel = $('trendCitySelect');
+  const picked = String(sel?.value || '').trim();
+  if (picked) return picked;
+  const fallbackCity = isUidQuery(curCity) ? (curCityDisplay || '') : (curCity || '');
+  return String(fallbackCity).trim();
+}
+
+async function loadTrend(city = undefined) {
   try {
-    const url = city ? `/api/historical?city=${encodeURIComponent(city)}&hours=24` : '/api/historical?hours=24';
+    const requestedCity = getRequestedTrendCity(city);
+    const url = requestedCity
+      ? `/api/historical?city=${encodeURIComponent(requestedCity)}&hours=24&fresh=1`
+      : '/api/historical?hours=24&fresh=1';
     const r = await fetch(url);
     const d = await r.json();
     if (d.error) return;
@@ -1780,8 +1958,6 @@ async function loadTrend(city) {
     if (trendChartInst) { trendChartInst.destroy(); trendChartInst=null; }
     const cvs = $('trendChart');
     if (!cvs) return;
-
-    const points = d.aqi.map((v,i) => ({ x:d.timestamps[i], y:v }));
 
     trendChartInst = new Chart(cvs, {
       type:'line',
@@ -1822,34 +1998,57 @@ async function loadTrend(city) {
     });
 
     // Populate city dropdown
-    populateCitySelect(d);
+    populateCitySelect(requestedCity);
   } catch {}
 }
 
-async function populateCitySelect() {
+async function populateCitySelect(selectedCity = '') {
   try {
-    const r = await fetch('/api/city-ranking');
+    const r = await fetch('/api/city-ranking?fresh=1');
     const d = await r.json();
     const sel = $('trendCitySelect');
     if (!sel || !d.cities) return;
-    sel.innerHTML = '<option value="">All Cities</option>' +
-      d.cities.map(c => `<option value="${c.city}">${c.city}</option>`).join('');
-    sel.addEventListener('change', () => loadTrend(sel.value));
+    sel.innerHTML = '<option value="">Current Selection</option>' +
+      d.cities.map(c => `<option value="${c.city}">${titleCaseWords(c.city || '')}</option>`).join('');
+    const fallbackPicked = isUidQuery(curCity) ? (curCityDisplay || '') : (curCity || '');
+    const picked = String(selectedCity || fallbackPicked || '').trim();
+    if (picked) sel.value = picked;
+    if (!sel.dataset.bound) {
+      sel.addEventListener('change', () => {
+        const selected = String(sel.value || '').trim();
+        const fallbackCity = isUidQuery(curCity) ? String(curCityDisplay || '').trim() : String(curCity || '').trim();
+        const targetCity = selected || fallbackCity;
+        loadTrend(targetCity);
+        loadHeatmap(targetCity);
+      });
+      sel.dataset.bound = '1';
+    }
   } catch {}
 }
 
 /* ── Donut chart ────────────────────────────────────────── */
 async function loadDonut() {
   try {
-    const qCity = curCity ? `?city=${encodeURIComponent(curCity)}` : '';
-    const d = await fetchJsonNoCache(`/api/current-aqi${qCity}`);
-    if (d.error) return;
-
     if (donutChartInst) { donutChartInst.destroy(); donutChartInst=null; }
     const cvs = $('donutChart');
     if (!cvs) return;
 
-    const polls = d.pollutants || {};
+    let polls = null;
+    if (curLiveData && typeof curLiveData === 'object') {
+      const livePolls = extractLivePollutants(curLiveData);
+      const hasLive = Object.values(livePolls).some(v => Number.isFinite(v));
+      if (hasLive) {
+        polls = livePolls;
+      }
+    }
+
+    if (!polls) {
+      const qCity = curCity ? `?city=${encodeURIComponent(curCity)}` : '';
+      const d = await fetchJsonNoCache(`/api/current-aqi${qCity}`);
+      if (d.error) return;
+      polls = d.pollutants || {};
+    }
+
     const keys = Object.keys(POLL_CFG);
 
     donutChartInst = new Chart(cvs, {
@@ -1857,7 +2056,7 @@ async function loadDonut() {
       data:{
         labels: keys.map(k => POLL_CFG[k].lbl),
         datasets:[{
-          data: keys.map(k => polls[k] || 0),
+          data: keys.map(k => Number.isFinite(Number(polls[k])) ? Number(polls[k]) : 0),
           backgroundColor: keys.map(k => POLL_CFG[k].color),
           borderWidth:2, borderColor:'#fff', hoverOffset:10,
         }]
@@ -2000,9 +2199,13 @@ function heatColor(val) {
   return '#7e0023';
 }
 
-async function loadHeatmap() {
+async function loadHeatmap(city = undefined) {
   try {
-    const r = await fetch('/api/heatmap');
+    const requestedCity = getRequestedTrendCity(city);
+    const url = requestedCity
+      ? `/api/heatmap?city=${encodeURIComponent(requestedCity)}&hours=24&fresh=1`
+      : '/api/heatmap?hours=24&fresh=1';
+    const r = await fetch(url);
     const d = await r.json();
     if (!d.data) return;
 
@@ -2033,17 +2236,19 @@ async function loadHeatmap() {
 /* ── City Ranking Table ─────────────────────────────────── */
 async function loadRanking() {
   try {
-    const r = await fetch('/api/city-ranking');
+    const r = await fetch('/api/city-ranking?fresh=1');
     const d = await r.json();
     if (!d.cities) return;
 
     $('rankingBody').innerHTML = d.cities.map((c,i) => {
       const cat = getCat(c.aqi);
       const txtClr = c.aqi <= 100 ? '#000' : '#fff';
+      const cityLabel = titleCaseWords(c.city || '');
+      const countryLabel = titleCaseWords(c.country || '');
       return `<tr class="fade-in stagger-${Math.min(i+1,5)}">
         <td style="font-size:.72rem;font-weight:600;color:#9ca3af">${i+1}</td>
-        <td style="font-weight:700">${c.city}</td>
-        <td style="color:#9ca3af;font-size:.78rem">${c.country}</td>
+        <td style="font-weight:700">${cityLabel}</td>
+        <td style="color:#9ca3af;font-size:.78rem">${countryLabel || '—'}</td>
         <td><span class="aqi-badge-cell" style="background:${cat.color};color:${txtClr}">${Math.round(c.aqi)}</span></td>
         <td style="font-weight:700;font-size:.78rem;color:${cat.color}">${cat.level}</td>
         <td style="font-size:.78rem;color:#4a5568">${c.pm25}</td>
@@ -2056,7 +2261,7 @@ async function loadRanking() {
 /* ── Stats Cards ────────────────────────────────────────── */
 async function loadStats() {
   try {
-    const r = await fetch('/api/statistics');
+    const r = await fetch('/api/statistics?fresh=1');
     const d = await r.json();
     if (d.error) return;
 
@@ -2069,24 +2274,67 @@ async function loadStats() {
 
 function animateCount(el, target, decimals=0) {
   if (!el) return;
+  const numericTarget = Number(target);
+  const safeTarget = Number.isFinite(numericTarget) ? numericTarget : 0;
   const start = 0, dur = 1200;
   const startTime = performance.now();
   const update = now => {
     const t = Math.min((now - startTime) / dur, 1);
     const eased = 1 - Math.pow(1-t, 3);
-    el.textContent = (start + (target - start) * eased).toFixed(decimals);
+    el.textContent = (start + (safeTarget - start) * eased).toFixed(decimals);
     if (t < 1) requestAnimationFrame(update);
-    else el.textContent = target.toFixed(decimals);
+    else el.textContent = safeTarget.toFixed(decimals);
   };
   requestAnimationFrame(update);
 }
 
-/* ── Auto refresh every 5 min ───────────────────────────── */
+async function refreshLiveAqiOnly() {
+  const activeCity = String(curCity || '').trim();
+  if (!activeCity) return;
+  const reqSeq = ++cityLoadSeq;
+  const displayHint = curCityDisplay || normalizeDisplayName(activeCity) || activeCity;
+  const cachedSnapshot = getLiveSnapshot([activeCity, displayHint, curHeroQueryHint]);
+
+  try {
+    const j = await fetchJsonNoCache(`/api/live/${encodeURIComponent(activeCity)}?fresh=1`);
+    if (isStaleReq(reqSeq)) return;
+    if (j?.status !== 'ok' || !j?.data) {
+      applyCachedLiveSnapshot(cachedSnapshot, reqSeq, displayHint);
+      return;
+    }
+
+    curLiveData = j.data;
+    const resolvedAqi = resolveLiveAqi(j.data, getDisplayedAqiFallback());
+    if (!Number.isFinite(Number(j?.data?.aqi)) && Number.isFinite(resolvedAqi)) {
+      curLiveData.aqi = resolvedAqi;
+    }
+    curTimeIso = j.data?.time?.iso || curTimeIso || '';
+    if ($('aqiUpdated')) $('aqiUpdated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+
+    rememberLiveSnapshot([activeCity, displayHint, curHeroQueryHint, j?.data?.city?.name], curLiveData);
+    renderHero(curLiveData, reqSeq, displayHint);
+    renderForecast(curLiveData?.forecast, Number.isFinite(resolvedAqi) ? resolvedAqi : getDisplayedAqiFallback());
+    loadDonut();
+    loadNlpAdvice(curLiveData, reqSeq);
+  } catch {
+    if (isStaleReq(reqSeq)) return;
+    applyCachedLiveSnapshot(cachedSnapshot, reqSeq, displayHint);
+  }
+}
+
+/* ── Auto refresh (live + overview) ─────────────────────── */
 setInterval(() => {
-  loadCity(curCity);
-  loadTrend();
+  refreshLiveAqiOnly();
+}, LIVE_UI_REFRESH_MS);
+
+setInterval(() => {
+  const selected = getRequestedTrendCity();
+  loadTrend(selected);
   loadMapData();
-}, 5 * 60 * 1000);
+  loadStats();
+  loadRanking();
+  loadHeatmap(selected);
+}, OVERVIEW_REFRESH_MS);
 
 /* ── Boot ───────────────────────────────────────────────── */
 (async function init() {
@@ -2102,11 +2350,11 @@ setInterval(() => {
     await withTimeout(loadCity('delhi'), 5000);
 
     await Promise.all([
-      withTimeout(loadTrend(), 5000),
+      withTimeout(loadTrend(curCity), 5000),
       withTimeout(loadDonut(), 5000),
       withTimeout(loadStats(), 5000),
       withTimeout(loadRanking(), 5000),
-      withTimeout(loadHeatmap(), 5000),
+      withTimeout(loadHeatmap(curCity), 5000),
     ]);
 
     // initialize map

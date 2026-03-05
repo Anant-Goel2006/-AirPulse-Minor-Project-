@@ -18,7 +18,7 @@ async function loadAnalytics() {
   const poll = $('analyticsPollSelect')?.value || 'aqi';
 
   try {
-    const url = city ? `/api/historical?city=${encodeURIComponent(city)}&hours=48` : '/api/historical?hours=48';
+    const url = city ? `/api/historical?city=${encodeURIComponent(city)}&hours=48&fresh=1` : '/api/historical?hours=48&fresh=1';
     const r = await fetch(url);
     const d = await r.json();
     if (d.error) return;
@@ -51,9 +51,15 @@ async function loadAnalytics() {
     // Distribution
     if (dChart) { dChart.destroy(); dChart=null; }
     const bins = Array(10).fill(0);
-    const max = Math.max(...vals), min = Math.min(...vals);
-    const step = (max-min)/10;
-    vals.forEach(v => { const b = Math.min(Math.floor((v-min)/step), 9); bins[b]++; });
+    const numericVals = (vals || []).map(v => Number(v)).filter(v => Number.isFinite(v));
+    const max = numericVals.length ? Math.max(...numericVals) : 0;
+    const min = numericVals.length ? Math.min(...numericVals) : 0;
+    const span = Math.max(max - min, 1);
+    const step = span / 10;
+    numericVals.forEach(v => {
+      const idx = Math.max(0, Math.min(Math.floor((v - min) / step), 9));
+      bins[idx] += 1;
+    });
     const binLabels = bins.map((_,i)=>(min+i*step).toFixed(0));
 
     dChart = new Chart($('distChart'), {
@@ -75,7 +81,7 @@ async function loadAnalytics() {
 
   // Comparison chart (all cities avg AQI)
   try {
-    const r = await fetch('/api/city-ranking');
+    const r = await fetch('/api/city-ranking?fresh=1');
     const d = await r.json();
     if (!d.cities) return;
 
@@ -105,7 +111,8 @@ async function loadAnalytics() {
 
   // Correlation chart (temp vs AQI scatter)
   try {
-    const r = await fetch('/api/historical?hours=100');
+    const corrUrl = city ? `/api/historical?city=${encodeURIComponent(city)}&hours=100&fresh=1` : '/api/historical?hours=100&fresh=1';
+    const r = await fetch(corrUrl);
     const d = await r.json();
     if (d.error) return;
     // Use PM2.5 vs AQI as proxy for correlation
@@ -128,7 +135,7 @@ async function loadAnalytics() {
   } catch {}
 
   // Heatmap
-  loadHeatmap();
+  loadHeatmap(city);
 }
 
 function heatColor(v) {
@@ -141,9 +148,10 @@ function heatColor(v) {
   return '#7e0023';
 }
 
-async function loadHeatmap() {
+async function loadHeatmap(city = '') {
   try {
-    const r = await fetch('/api/heatmap');
+    const url = city ? `/api/heatmap?city=${encodeURIComponent(city)}&hours=48&fresh=1` : '/api/heatmap?hours=48&fresh=1';
+    const r = await fetch(url);
     const d = await r.json();
     if (!d.data) return;
     const cont = $('analyticsHeatmap');
@@ -168,11 +176,11 @@ async function loadHeatmap() {
 // Populate city dropdown
 async function populateCities() {
   try {
-    const r = await fetch('/api/city-ranking');
+    const r = await fetch('/api/city-ranking?fresh=1');
     const d = await r.json();
     const sel = $('analyticsCitySelect');
     if (!sel||!d.cities) return;
-    sel.innerHTML = '<option value="">All Cities</option>' + d.cities.map(c=>`<option value="${c.city}">${c.city}</option>`).join('');
+    sel.innerHTML = '<option value="">All Cities</option>' + d.cities.map(c=>`<option value="${c.city}">${String(c.city || '').replace(/\b\w/g, ch => ch.toUpperCase())}</option>`).join('');
   } catch {}
 }
 

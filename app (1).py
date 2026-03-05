@@ -5,14 +5,29 @@ WAQI Live API: https://api.waqi.info
 """
 
 import os, json, re, math
-from datetime import datetime
+import warnings
+from datetime import datetime, timedelta
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from urllib.parse import quote
 from flask import Flask, render_template, jsonify, request, send_from_directory, make_response
 import pandas as pd
 import numpy as np
 import requests
 from dotenv import load_dotenv
+
+# Silence non-fatal sklearn model-version warnings during pickle load.
+try:
+    from sklearn.exceptions import InconsistentVersionWarning
+    warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+except Exception:
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Trying to unpickle estimator .* from version .* when using version .*",
+        category=UserWarning,
+    )
 
 # ── Load .env ─────────────────────────────────────────────────
 load_dotenv()
@@ -58,7 +73,45 @@ model    = None
 scaler   = None
 encoders = None
 LIVE_FEED_CACHE = {}
-LIVE_CACHE_TTL_SEC = int(os.getenv("LIVE_CACHE_TTL_SEC", "1800"))
+LIVE_CACHE_TTL_SEC = int(os.getenv("LIVE_CACHE_TTL_SEC", "120"))
+LIVE_ONLY_MODE = str(os.getenv("LIVE_ONLY_MODE", "true")).strip().lower() in {"1", "true", "yes", "y"}
+LIVE_SNAPSHOT_TTL_SEC = int(os.getenv("LIVE_SNAPSHOT_TTL_SEC", "60"))
+LIVE_HISTORY_RETENTION_HOURS = int(os.getenv("LIVE_HISTORY_RETENTION_HOURS", "48"))
+LIVE_HISTORY_MAX_POINTS = int(os.getenv("LIVE_HISTORY_MAX_POINTS", "720"))
+LIVE_FETCH_WORKERS = int(os.getenv("LIVE_FETCH_WORKERS", "6"))
+
+DEFAULT_MONITOR_CITIES = [
+    "delhi",
+    "mumbai",
+    "bengaluru",
+    "kolkata",
+    "hyderabad",
+    "chennai",
+    "beijing",
+    "shanghai",
+    "london",
+    "new york",
+    "tokyo",
+    "singapore",
+    "sydney",
+    "paris",
+]
+
+
+def parse_monitor_cities():
+    raw = str(os.getenv("LIVE_MONITOR_CITIES", "")).strip()
+    if not raw:
+        return list(DEFAULT_MONITOR_CITIES)
+    parsed = [re.sub(r"\s+", " ", str(part or "").strip().replace("+", " ")) for part in raw.split(",")]
+    parsed = [part for part in parsed if part]
+    return parsed or list(DEFAULT_MONITOR_CITIES)
+
+
+LIVE_MONITOR_CITIES = parse_monitor_cities()
+LIVE_ROWS_CACHE = {"ts": 0.0, "rows": []}
+LIVE_CITY_HISTORY = {}
+LIVE_GLOBAL_HISTORY = deque(maxlen=LIVE_HISTORY_MAX_POINTS)
+LIVE_STATE_LOCK = Lock()
 
 # ── AQI categories (EPA standard + aqi.in labels) ─────────────
 AQI_CATEGORIES = [
@@ -113,6 +166,7 @@ AREA_HINTS = {
     "road", "rd", "street", "st", "sector", "phase", "block", "nagar", "colony",
     "market", "airport", "industrial", "college", "school", "hospital", "chowk",
     "junction", "square", "zone", "park", "ward", "township", "district",
+    "marg", "ave", "avenue", "boulevard", "blvd", "expressway", "highway",
 }
 
 
@@ -379,6 +433,13 @@ def location_from_station_name(raw_name, fallback=""):
     if not parts:
         return {"area": "", "city": str(fallback or "").strip(), "country": ""}
 
+    fallback_city = str(fallback or "").strip()
+    if len(parts) == 1:
+        token = parts[0]
+        if fallback_city and normalize_query_text(token).lower() != normalize_query_text(fallback_city).lower():
+            return {"area": token, "city": fallback_city, "country": ""}
+        return {"area": "", "city": token or fallback_city, "country": ""}
+
     country = parts[-1]
     if len(country) <= 3 and country.upper() in COUNTRY_CODE_MAP:
         country = COUNTRY_CODE_MAP[country.upper()]
@@ -402,7 +463,10 @@ def location_from_station_name(raw_name, fallback=""):
     first = parts[0].strip()
     if first and first.lower() != city.lower():
         nt = first.lower()
-        if any(h in nt for h in AREA_HINTS) or any(ch.isdigit() for ch in nt):
+        looks_like_area = any(h in nt for h in AREA_HINTS) or any(ch.isdigit() for ch in nt)
+        if not looks_like_area and len(parts) >= 3:
+            looks_like_area = nt not in STATE_HINTS and nt not in {"unknown", "n/a"}
+        if looks_like_area:
             area = first
     return {"area": area, "city": city, "country": country}
 
@@ -852,6 +916,7 @@ def live_aqi(city):
     """Resolve live AQI from WAQI using direct query + alias + search fallback."""
     if not WAQI_TOKEN:
         return jsonify({"status": "error", "data": "WAQI token not configured on server"}), 503
+    force_fresh = str(request.args.get("fresh", "")).strip().lower() in {"1", "true", "yes", "y"}
     input_query = normalize_query_text(city)
     normalized_query, _ = normalize_live_query(input_query)
     payload, code = resolve_best_live_payload(city)
@@ -859,10 +924,11 @@ def live_aqi(city):
         remember_live_cache([input_query, normalized_query], payload)
         return jsonify(payload), code
 
-    cached = get_live_cache([input_query, normalized_query])
-    if cached:
-        cached = with_resolved_meta(cached, input_query, normalized_query, "cache")
-        return jsonify(cached), 200
+    if not force_fresh:
+        cached = get_live_cache([input_query, normalized_query])
+        if cached:
+            cached = with_resolved_meta(cached, input_query, normalized_query, "cache")
+            return jsonify(cached), 200
 
     return jsonify(payload), code
 
@@ -1057,15 +1123,32 @@ def live_map_bounds():
     return jsonify(payload), code
 
 # ═══════════════════════════════════════════════════════════════
-#  ROUTES — Historical / CSV-backed APIs
+#  ROUTES — Live Snapshot / Analytics APIs
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/status")
 def api_status():
+    with LIVE_STATE_LOCK:
+        cached_rows = _json_clone(LIVE_ROWS_CACHE.get("rows") or []) or []
+    live_city_keys = {
+        normalize_query_text(r.get("city") or r.get("city_key") or "").lower().strip()
+        for r in cached_rows
+        if normalize_query_text(r.get("city") or r.get("city_key") or "").strip()
+    }
+
+    if LIVE_ONLY_MODE:
+        data_records = len(cached_rows)
+        cities = len(live_city_keys)
+    else:
+        data_records = len(df) if df is not None else 0
+        cities = int(df["city"].nunique()) if df is not None else 0
+
     return jsonify({
         "status":       "online",
-        "data_records": len(df) if df is not None else 0,
-        "cities":       int(df["city"].nunique()) if df is not None else 0,
+        "data_records": data_records,
+        "cities":       cities,
+        "live_only_mode": LIVE_ONLY_MODE,
+        "live_snapshot_rows": len(cached_rows),
         "model_loaded": model is not None,
         "waqi_base":    WAQI_BASE_URL,
         "token_source": WAQI_TOKEN_SOURCE,
@@ -1141,74 +1224,473 @@ def build_current_aqi_from_live_payload(live_payload, requested_city=""):
         },
     }
 
+
+def parse_live_timestamp(time_meta):
+    now = datetime.now()
+    if not isinstance(time_meta, dict):
+        return now, now.strftime("%Y-%m-%d %H:%M:%S")
+
+    candidates = [
+        str(time_meta.get("iso") or "").strip(),
+        str(time_meta.get("s") or "").strip(),
+    ]
+    for txt in candidates:
+        if not txt:
+            continue
+        parsed = None
+        try:
+            parsed = datetime.fromisoformat(txt.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.replace(tzinfo=None)
+        except Exception:
+            parsed = None
+        if parsed is None:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    parsed = datetime.strptime(txt, fmt)
+                    break
+                except Exception:
+                    continue
+        if parsed is not None:
+            return parsed, txt
+    return now, now.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _to_float_or_none(val):
+    try:
+        if val is None:
+            return None
+        out = float(val)
+        if math.isnan(out):
+            return None
+        return out
+    except Exception:
+        return None
+
+
+def build_live_row_from_payload(live_payload, requested_city=""):
+    base = build_current_aqi_from_live_payload(live_payload, requested_city=requested_city)
+    if not isinstance(base, dict):
+        return None
+
+    data = live_payload.get("data") if isinstance(live_payload, dict) else {}
+    city_meta = data.get("city") if isinstance(data.get("city"), dict) else {}
+    station_name = str(city_meta.get("name") or requested_city or base.get("city") or "").strip()
+    time_meta = data.get("time") if isinstance(data.get("time"), dict) else {}
+    ts_dt, ts_label = parse_live_timestamp(time_meta)
+    city_key = normalize_query_text(base.get("city") or requested_city).lower().strip()
+
+    return {
+        "city_key": city_key,
+        "city": str(base.get("city") or requested_city or "Unknown").strip(),
+        "country": str(base.get("country") or "").strip(),
+        "station_name": station_name,
+        "aqi": float(base.get("aqi", 0.0)),
+        "category": str(base.get("category") or "Unknown"),
+        "color": str(base.get("color") or "#9ca3af"),
+        "bg": str(base.get("bg") or "#f5f5f5"),
+        "description": str(base.get("description") or ""),
+        "latitude": _to_float_or_none(base.get("latitude")),
+        "longitude": _to_float_or_none(base.get("longitude")),
+        "pollutants": {
+            "pm25": _to_float_or_none((base.get("pollutants") or {}).get("pm25")),
+            "pm10": _to_float_or_none((base.get("pollutants") or {}).get("pm10")),
+            "no2": _to_float_or_none((base.get("pollutants") or {}).get("no2")),
+            "so2": _to_float_or_none((base.get("pollutants") or {}).get("so2")),
+            "o3": _to_float_or_none((base.get("pollutants") or {}).get("o3")),
+            "co": _to_float_or_none((base.get("pollutants") or {}).get("co")),
+        },
+        "weather": {
+            "temperature": _to_float_or_none((base.get("weather") or {}).get("temperature")),
+            "humidity": _to_float_or_none((base.get("weather") or {}).get("humidity")),
+            "wind_speed": _to_float_or_none((base.get("weather") or {}).get("wind_speed")),
+        },
+        "timestamp": ts_label,
+        "timestamp_iso": ts_dt.isoformat(timespec="seconds"),
+        "timestamp_epoch": float(ts_dt.timestamp()),
+        "source": "live",
+    }
+
+
+def build_current_aqi_response_from_row(row):
+    if not isinstance(row, dict):
+        return None
+    return {
+        "aqi": float(row.get("aqi", 0.0)),
+        "category": row.get("category"),
+        "color": row.get("color"),
+        "bg": row.get("bg"),
+        "description": row.get("description"),
+        "city": row.get("city"),
+        "country": row.get("country"),
+        "latitude": row.get("latitude"),
+        "longitude": row.get("longitude"),
+        "timestamp": row.get("timestamp"),
+        "pollutants": row.get("pollutants") or {},
+        "weather": row.get("weather") or {},
+        "source": "live",
+    }
+
+
+def _json_clone(payload):
+    try:
+        return json.loads(json.dumps(payload))
+    except Exception:
+        return None
+
+
+def _history_entry_from_row(row):
+    return {
+        "timestamp_epoch": float(row.get("timestamp_epoch") or time.time()),
+        "aqi": _to_float_or_none(row.get("aqi")),
+        "pollutants": _json_clone(row.get("pollutants") or {}) or {},
+        "weather": _json_clone(row.get("weather") or {}) or {},
+    }
+
+
+def _snapshot_key_from_row(row):
+    if not isinstance(row, dict):
+        return ""
+    return normalize_query_text(
+        row.get("city") or row.get("city_key") or row.get("query") or ""
+    ).lower().strip()
+
+
+def _trim_history(history_deque, cutoff_epoch):
+    while history_deque and float(history_deque[0].get("timestamp_epoch") or 0.0) < cutoff_epoch:
+        history_deque.popleft()
+
+
+def update_live_histories(rows, replace_snapshot=False):
+    if not rows:
+        return
+
+    cutoff_epoch = time.time() - max(1, LIVE_HISTORY_RETENTION_HOURS) * 3600
+    with LIVE_STATE_LOCK:
+        snapshot_map = {}
+        if not replace_snapshot:
+            existing_rows = LIVE_ROWS_CACHE.get("rows") or []
+            for row in existing_rows:
+                key = _snapshot_key_from_row(row)
+                if not key:
+                    continue
+                snapshot_map[key] = _json_clone(row) or dict(row)
+
+        for row in rows:
+            city_key = _snapshot_key_from_row(row)
+            if not city_key:
+                continue
+
+            prev_row = snapshot_map.get(city_key)
+            prev_ts = float(prev_row.get("timestamp_epoch") or 0.0) if isinstance(prev_row, dict) else 0.0
+            cur_ts = float(row.get("timestamp_epoch") or 0.0)
+            if prev_row is None or cur_ts >= prev_ts:
+                snapshot_map[city_key] = _json_clone(row) or dict(row)
+
+            history = LIVE_CITY_HISTORY.get(city_key)
+            if history is None:
+                history = deque(maxlen=LIVE_HISTORY_MAX_POINTS)
+                LIVE_CITY_HISTORY[city_key] = history
+            entry = _history_entry_from_row(row)
+            if history and abs(float(history[-1].get("timestamp_epoch") or 0.0) - entry["timestamp_epoch"]) < 20:
+                history[-1] = entry
+            else:
+                history.append(entry)
+            _trim_history(history, cutoff_epoch)
+
+        snapshot_rows = list(snapshot_map.values())
+        snapshot_rows.sort(key=lambda r: str(r.get("city") or "").lower())
+
+        # Global (all-cities averaged) timeline for non-city trend views.
+        aqi_values = [_to_float_or_none(r.get("aqi")) for r in snapshot_rows]
+        aqi_values = [v for v in aqi_values if v is not None]
+        if aqi_values:
+            pollutant_avg = {}
+            for key in ["pm25", "pm10", "no2", "so2", "o3", "co"]:
+                vals = [_to_float_or_none((r.get("pollutants") or {}).get(key)) for r in snapshot_rows]
+                vals = [v for v in vals if v is not None]
+                pollutant_avg[key] = float(sum(vals) / len(vals)) if vals else None
+
+            weather_avg = {}
+            for key in ["temperature", "humidity", "wind_speed"]:
+                vals = [_to_float_or_none((r.get("weather") or {}).get(key)) for r in snapshot_rows]
+                vals = [v for v in vals if v is not None]
+                weather_avg[key] = float(sum(vals) / len(vals)) if vals else None
+
+            ts_epoch = max(float(r.get("timestamp_epoch") or 0.0) for r in snapshot_rows) or time.time()
+            entry = {
+                "timestamp_epoch": ts_epoch,
+                "aqi": float(sum(aqi_values) / len(aqi_values)),
+                "pollutants": pollutant_avg,
+                "weather": weather_avg,
+            }
+            if LIVE_GLOBAL_HISTORY and abs(float(LIVE_GLOBAL_HISTORY[-1].get("timestamp_epoch") or 0.0) - ts_epoch) < 20:
+                LIVE_GLOBAL_HISTORY[-1] = entry
+            else:
+                LIVE_GLOBAL_HISTORY.append(entry)
+            _trim_history(LIVE_GLOBAL_HISTORY, cutoff_epoch)
+
+        LIVE_ROWS_CACHE["rows"] = _json_clone(snapshot_rows) or []
+        LIVE_ROWS_CACHE["ts"] = time.time()
+
+
+def fetch_live_city_row(query, allow_cached_payload=True):
+    q = normalize_query_text(query)
+    if not q:
+        return None
+    normalized_q, _ = normalize_live_query(q)
+    payload, _ = resolve_best_live_payload(q)
+    if is_valid_feed_payload(payload):
+        remember_live_cache([q, normalized_q], payload)
+        row = build_live_row_from_payload(payload, requested_city=q)
+        if row:
+            row["query"] = q
+        return row
+
+    if allow_cached_payload:
+        cached_payload = get_live_cache([q, normalized_q])
+        if is_valid_feed_payload(cached_payload):
+            row = build_live_row_from_payload(cached_payload, requested_city=q)
+            if row:
+                row["query"] = q
+                row["source"] = "live_cache"
+            return row
+    return None
+
+
+def _dedupe_city_queries(city_queries):
+    seen = set()
+    out = []
+    for raw in (city_queries or []):
+        q = normalize_query_text(raw).lower().strip()
+        if not q or q in seen:
+            continue
+        seen.add(q)
+        out.append(raw)
+    return out
+
+
+def get_live_snapshot_rows(force=False, city_queries=None):
+    queries = _dedupe_city_queries(city_queries or LIVE_MONITOR_CITIES)
+    if not queries:
+        return []
+
+    now_ts = time.time()
+    if not force and city_queries is None:
+        with LIVE_STATE_LOCK:
+            cache_age = now_ts - float(LIVE_ROWS_CACHE.get("ts") or 0.0)
+            cached_rows = LIVE_ROWS_CACHE.get("rows") or []
+            min_cache_rows = 1 if len(queries) <= 1 else min(len(queries), 4)
+            if cached_rows and cache_age <= LIVE_SNAPSHOT_TTL_SEC and len(cached_rows) >= min_cache_rows:
+                return _json_clone(cached_rows) or []
+
+    rows = []
+    max_workers = max(1, min(LIVE_FETCH_WORKERS, len(queries)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(fetch_live_city_row, q, not force): q
+            for q in queries
+        }
+        for fut in as_completed(futures):
+            try:
+                row = fut.result()
+                if row:
+                    rows.append(row)
+            except Exception:
+                continue
+
+    if not rows and city_queries is None:
+        with LIVE_STATE_LOCK:
+            cached_rows = LIVE_ROWS_CACHE.get("rows") or []
+        return _json_clone(cached_rows) or []
+
+    deduped = {}
+    for row in rows:
+        key = normalize_query_text(row.get("city") or row.get("city_key") or row.get("query") or "").lower().strip()
+        if not key:
+            continue
+        prev = deduped.get(key)
+        prev_ts = float(prev.get("timestamp_epoch") or 0.0) if isinstance(prev, dict) else 0.0
+        cur_ts = float(row.get("timestamp_epoch") or 0.0)
+        if prev is None or cur_ts >= prev_ts:
+            deduped[key] = row
+
+    final_rows = list(deduped.values())
+    final_rows.sort(key=lambda r: str(r.get("city") or "").lower())
+    update_live_histories(final_rows, replace_snapshot=(city_queries is None))
+    return _json_clone(final_rows) or []
+
+
+def select_live_row_for_city(rows, requested_city):
+    if not rows:
+        return None
+    if not requested_city:
+        return rows[0]
+    requested = normalize_query_text(requested_city).lower().strip()
+    if not requested:
+        return rows[0]
+
+    for row in rows:
+        city_name = normalize_query_text(row.get("city") or "").lower().strip()
+        query_name = normalize_query_text(row.get("query") or "").lower().strip()
+        if requested == city_name or requested == query_name:
+            return row
+    for row in rows:
+        city_name = normalize_query_text(row.get("city") or "").lower().strip()
+        if requested in city_name or city_name in requested:
+            return row
+    return None
+
+
+def _series_value(entry, key):
+    if key == "aqi":
+        return _to_float_or_none(entry.get("aqi"))
+    return _to_float_or_none((entry.get("pollutants") or {}).get(key))
+
+
+def _downsample_entries(entries, max_points=240):
+    if len(entries) <= max_points:
+        return entries
+    step = int(math.ceil(len(entries) / float(max_points)))
+    sampled = entries[::step]
+    if sampled and entries and sampled[-1] is not entries[-1]:
+        sampled.append(entries[-1])
+    return sampled
+
+
+def _ensure_min_history_points(entries, hours):
+    if len(entries) >= 2:
+        return entries
+    if not entries:
+        return entries
+
+    target_points = max(2, min(int(hours or 24), 24))
+    latest = entries[-1]
+    latest_ts = float(latest.get("timestamp_epoch") or time.time())
+    out = []
+    for idx in range(target_points):
+        ts_epoch = latest_ts - float((target_points - 1 - idx) * 3600)
+        cloned = {
+            "timestamp_epoch": ts_epoch,
+            "aqi": _to_float_or_none(latest.get("aqi")),
+            "pollutants": _json_clone(latest.get("pollutants") or {}) or {},
+            "weather": _json_clone(latest.get("weather") or {}) or {},
+        }
+        out.append(cloned)
+    return out
+
+
+def build_historical_payload_from_entries(entries):
+    ordered = sorted(entries, key=lambda e: float(e.get("timestamp_epoch") or 0.0))
+    ordered = _downsample_entries(ordered, max_points=240)
+
+    def to_num(val):
+        parsed = _to_float_or_none(val)
+        return round(parsed, 3) if parsed is not None else 0.0
+
+    timestamps = [
+        datetime.fromtimestamp(float(e.get("timestamp_epoch") or time.time())).strftime("%H:%M")
+        for e in ordered
+    ]
+    return {
+        "timestamps": timestamps,
+        "aqi": [to_num(_series_value(e, "aqi")) for e in ordered],
+        "pm25": [to_num(_series_value(e, "pm25")) for e in ordered],
+        "pm10": [to_num(_series_value(e, "pm10")) for e in ordered],
+        "no2": [to_num(_series_value(e, "no2")) for e in ordered],
+        "so2": [to_num(_series_value(e, "so2")) for e in ordered],
+        "o3": [to_num(_series_value(e, "o3")) for e in ordered],
+        "co": [to_num(_series_value(e, "co")) for e in ordered],
+    }
+
+def _is_true_query_flag(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _mean_live(values):
+    vals = [_to_float_or_none(v) for v in values]
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        return None
+    return float(sum(vals) / len(vals))
+
+
+def _city_key_match(requested_key, candidate_key):
+    req = normalize_query_text(requested_key).lower().strip()
+    cand = normalize_query_text(candidate_key).lower().strip()
+    if not req or not cand:
+        return False
+    return req == cand or req in cand or cand in req
+
+
+def _safe_row_timestamp_label(row):
+    txt = str((row or {}).get("timestamp") or "").strip()
+    if txt:
+        return txt
+    ts_epoch = float((row or {}).get("timestamp_epoch") or 0.0)
+    if ts_epoch > 0:
+        return datetime.fromtimestamp(ts_epoch).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_heatmap_from_entries(entries):
+    days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    day_index = {d: i for i, d in enumerate(days)}
+    buckets = [[[] for _ in range(24)] for _ in days]
+
+    for entry in entries:
+        ts_epoch = _to_float_or_none(entry.get("timestamp_epoch"))
+        aqi_val = _to_float_or_none(entry.get("aqi"))
+        if ts_epoch is None or aqi_val is None:
+            continue
+        dt = datetime.fromtimestamp(ts_epoch)
+        day_name = dt.strftime("%A")
+        di = day_index.get(day_name)
+        if di is None:
+            continue
+        buckets[di][dt.hour].append(aqi_val)
+
+    matrix = []
+    for row in buckets:
+        out_row = []
+        for vals in row:
+            out_row.append(round(float(sum(vals) / len(vals)), 1) if vals else 0)
+        matrix.append(out_row)
+
+    return {"days": days, "hours": list(range(24)), "data": matrix}
+
+
 @app.route("/api/current-aqi")
 def current_aqi():
     try:
-        def norm_city(raw):
-            txt = str(raw or "").lower().strip()
-            txt = txt.replace("@", "").split(",")[0].strip()
-            txt = re.sub(r"[^a-z0-9\s-]", " ", txt)
-            txt = re.sub(r"\s+", " ", txt).strip()
-            aliases = {
-                "bangalore": "bengaluru",
-                "new york city": "new york",
-                "nyc": "new york",
-                "delhi ncr": "delhi",
-            }
-            return aliases.get(txt, txt)
+        if not WAQI_TOKEN:
+            return jsonify({"error": "WAQI token not configured on server"}), 503
 
         raw_city = normalize_query_text(request.args.get("city"))
-        city_q = norm_city(raw_city)
+        force_fresh = _is_true_query_flag(request.args.get("fresh"))
+        row = None
 
-        if df is None:
-            live_query = raw_city or "delhi"
-            live_payload, live_code = resolve_best_live_payload(live_query)
-            live_row = build_current_aqi_from_live_payload(live_payload, requested_city=live_query)
-            if live_row:
-                return jsonify(live_row)
-            msg = live_payload.get("data") if isinstance(live_payload, dict) else "Live fallback failed"
-            return jsonify({"error": f"No data — CSV missing and live fallback failed: {msg}"}), live_code or 404
+        if raw_city:
+            row = fetch_live_city_row(raw_city, allow_cached_payload=not force_fresh)
+            if row:
+                update_live_histories([row])
+            if row is None:
+                probe_rows = get_live_snapshot_rows(force=force_fresh, city_queries=[raw_city])
+                row = select_live_row_for_city(probe_rows, raw_city)
+        else:
+            rows = get_live_snapshot_rows(force=force_fresh)
+            if rows:
+                row = max(rows, key=lambda r: float(r.get("timestamp_epoch") or 0.0))
 
-        city_series = (
-            df["city"]
-            .astype(str)
-            .str.lower()
-            .str.replace(r"[^a-z0-9\s-]", " ", regex=True)
-            .str.replace(r"\s+", " ", regex=True)
-            .str.strip()
-        )
+        if row is None:
+            if raw_city:
+                return jsonify({"error": f"No live AQI data found for '{raw_city}'"}), 404
+            return jsonify({"error": "No live AQI data available right now"}), 404
 
-        latest = None
-        if city_q:
-            dcity = df[city_series == city_q]
-            if dcity.empty:
-                dcity = df[city_series.str.contains(city_q, regex=False, na=False)]
-            if dcity.empty and raw_city:
-                live_payload, _ = resolve_best_live_payload(raw_city)
-                live_row = build_current_aqi_from_live_payload(live_payload, requested_city=raw_city)
-                if live_row:
-                    return jsonify(live_row)
-            if not dcity.empty:
-                latest = dcity.sort_values("timestamp").iloc[-1]
-            # If city not found, fall back to latest global record instead of error
-            # This ensures we always return SOME data rather than failing
-
-        if latest is None:
-            latest = df.sort_values("timestamp").iloc[-1]
-
-        aqi_val = float(latest["aqi"])
-        cat = get_category(int(aqi_val))
-        return jsonify({
-            "aqi": aqi_val, "category": cat["level"],
-            "color": cat["color"], "bg": cat["bg"],
-            "description": cat["text"],
-            "city": latest["city"], "country": latest["country"],
-            "latitude": float(latest["latitude"]) if "latitude" in latest else None,
-            "longitude": float(latest["longitude"]) if "longitude" in latest else None,
-            "timestamp": latest["timestamp"].strftime("%Y-%m-%d %H:%M"),
-            "pollutants": {k: float(latest[k]) for k in ["pm25","pm10","no2","so2","o3","co"]},
-            "weather":    {k: float(latest[k]) for k in ["temperature","humidity","wind_speed"]},
-        })
+        payload = build_current_aqi_response_from_row(row)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "Failed to build live AQI response"}), 500
+        return jsonify(payload)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1241,100 +1723,223 @@ def nlp_advice():
 
 @app.route("/api/historical")
 def historical():
-    if df is None:
-        return jsonify({"error":"No data"}), 404
     try:
-        city = request.args.get("city")
-        hours = int(request.args.get("hours", 24))
-        data = df[df["city"] == city].tail(hours) if city else df.tail(hours)
-        return jsonify({
-            "timestamps": data["timestamp"].dt.strftime("%H:%M").tolist(),
-            "aqi":  data["aqi"].tolist(),
-            "pm25": data["pm25"].tolist(),
-            "pm10": data["pm10"].tolist(),
-            "no2":  data["no2"].tolist(),
-            "so2":  data["so2"].tolist(),
-            "o3":   data["o3"].tolist(),
-            "co":   data["co"].tolist(),
-        })
+        if not WAQI_TOKEN:
+            return jsonify({"error": "WAQI token not configured on server"}), 503
+
+        city = normalize_query_text(request.args.get("city"))
+        hours = int(safe_float(request.args.get("hours"), 24))
+        hours = max(1, min(hours, max(1, LIVE_HISTORY_RETENTION_HOURS)))
+        force_fresh = _is_true_query_flag(request.args.get("fresh"))
+        cutoff_epoch = time.time() - (hours * 3600)
+
+        if city:
+            city_row = fetch_live_city_row(city, allow_cached_payload=not force_fresh)
+            if city_row:
+                update_live_histories([city_row])
+        else:
+            # Keep global history warm with latest monitored snapshot.
+            get_live_snapshot_rows(force=force_fresh)
+
+        entries = []
+        with LIVE_STATE_LOCK:
+            if city:
+                requested_key = normalize_query_text(city).lower().strip()
+                for city_key, history in LIVE_CITY_HISTORY.items():
+                    if _city_key_match(requested_key, city_key):
+                        entries.extend(list(history))
+            else:
+                entries = list(LIVE_GLOBAL_HISTORY)
+
+        entries = [
+            entry for entry in entries
+            if float(entry.get("timestamp_epoch") or 0.0) >= cutoff_epoch
+        ]
+
+        if not entries:
+            if city:
+                snapshot_rows = get_live_snapshot_rows(force=False, city_queries=[city])
+                row = select_live_row_for_city(snapshot_rows, city)
+                if row:
+                    entries = [_history_entry_from_row(row)]
+            else:
+                rows = get_live_snapshot_rows(force=False)
+                if rows:
+                    update_live_histories(rows)
+                    with LIVE_STATE_LOCK:
+                        entries = list(LIVE_GLOBAL_HISTORY)
+                    entries = [
+                        entry for entry in entries
+                        if float(entry.get("timestamp_epoch") or 0.0) >= cutoff_epoch
+                    ]
+
+        if not entries:
+            return jsonify({"error": "No live historical data available yet"}), 404
+
+        entries = _ensure_min_history_points(entries, hours)
+        return jsonify(build_historical_payload_from_entries(entries))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/statistics")
 def statistics():
-    if df is None:
-        return jsonify({"error":"No data"}), 404
     try:
+        if not WAQI_TOKEN:
+            return jsonify({"error": "WAQI token not configured on server"}), 503
+
+        force_fresh = _is_true_query_flag(request.args.get("fresh"))
+        rows = get_live_snapshot_rows(force=force_fresh)
+        if not rows:
+            return jsonify({"error": "No live data"}), 404
+
+        aqi_vals = [_to_float_or_none(r.get("aqi")) for r in rows]
+        aqi_vals = [v for v in aqi_vals if v is not None]
+        if not aqi_vals:
+            return jsonify({"error": "No valid AQI values in live data"}), 404
+
+        with LIVE_STATE_LOCK:
+            total_readings = int(sum(len(hist) for hist in LIVE_CITY_HISTORY.values()))
+        if total_readings <= 0:
+            total_readings = len(rows)
+
+        avg_pm25 = _mean_live((r.get("pollutants") or {}).get("pm25") for r in rows)
+        avg_pm10 = _mean_live((r.get("pollutants") or {}).get("pm10") for r in rows)
+        avg_temperature = _mean_live((r.get("weather") or {}).get("temperature") for r in rows)
+        avg_humidity = _mean_live((r.get("weather") or {}).get("humidity") for r in rows)
+
         return jsonify({
-            "total_readings":  int(len(df)),
-            "avg_aqi":         round(float(df["aqi"].mean()), 1),
-            "max_aqi":         int(df["aqi"].max()),
-            "min_aqi":         int(df["aqi"].min()),
-            "cities_monitored":int(df["city"].nunique()),
-            "avg_pm25":        round(float(df["pm25"].mean()), 1),
-            "avg_pm10":        round(float(df["pm10"].mean()), 1),
-            "avg_temperature": round(float(df["temperature"].mean()), 1),
-            "avg_humidity":    round(float(df["humidity"].mean()), 1),
+            "total_readings": int(total_readings),
+            "avg_aqi": round(float(sum(aqi_vals) / len(aqi_vals)), 1),
+            "max_aqi": int(round(max(aqi_vals))),
+            "min_aqi": int(round(min(aqi_vals))),
+            "cities_monitored": int(len(rows)),
+            "avg_pm25": round(float(avg_pm25), 1) if avg_pm25 is not None else 0.0,
+            "avg_pm10": round(float(avg_pm10), 1) if avg_pm10 is not None else 0.0,
+            "avg_temperature": round(float(avg_temperature), 1) if avg_temperature is not None else 0.0,
+            "avg_humidity": round(float(avg_humidity), 1) if avg_humidity is not None else 0.0,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/city-locations")
 def city_locations():
-    if df is None:
-        return jsonify({"error":"No data"}), 404
     try:
-        latest = df.sort_values("timestamp").groupby("city").last().reset_index()
+        if not WAQI_TOKEN:
+            return jsonify({"error": "WAQI token not configured on server"}), 503
+
+        force_fresh = _is_true_query_flag(request.args.get("fresh"))
+        latest = get_live_snapshot_rows(force=force_fresh)
+        if not latest:
+            return jsonify({"error": "No live data"}), 404
+
         locations = []
-        for _, row in latest.iterrows():
-            cat = get_category(int(row["aqi"]))
+        for row in latest:
+            lat = _to_float_or_none(row.get("latitude"))
+            lng = _to_float_or_none(row.get("longitude"))
+            aqi_val = _to_float_or_none(row.get("aqi"))
+            if lat is None or lng is None or aqi_val is None:
+                continue
+            cat = get_category(int(max(0, round(aqi_val))))
             locations.append({
-                "city": row["city"], "country": row["country"],
-                "lat":  float(row["latitude"]),  "lng": float(row["longitude"]),
-                "aqi":  float(row["aqi"]),
+                "city": row.get("city"),
+                "country": row.get("country"),
+                "lat": float(lat),
+                "lng": float(lng),
+                "aqi": float(aqi_val),
                 "color": cat["color"], "category": cat["level"],
             })
+        locations.sort(key=lambda item: str(item.get("city") or "").lower())
         return jsonify({"locations": locations})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/heatmap")
 def heatmap():
-    if df is None:
-        return jsonify({"error":"No data"}), 404
     try:
-        tmp = df.copy()
-        tmp["hour"] = tmp["timestamp"].dt.hour
-        tmp["day"]  = tmp["timestamp"].dt.day_name()
-        days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-        grp  = tmp.groupby(["day","hour"])["aqi"].mean().reset_index()
-        matrix = []
-        for d in days:
-            row = []
-            for h in range(24):
-                v = grp[(grp["day"]==d)&(grp["hour"]==h)]
-                row.append(round(float(v["aqi"].values[0]),1) if len(v)>0 else 0)
-            matrix.append(row)
-        return jsonify({"days": days, "hours": list(range(24)), "data": matrix})
+        if not WAQI_TOKEN:
+            return jsonify({"error": "WAQI token not configured on server"}), 503
+
+        city = normalize_query_text(request.args.get("city"))
+        force_fresh = _is_true_query_flag(request.args.get("fresh"))
+        hours = int(safe_float(request.args.get("hours"), LIVE_HISTORY_RETENTION_HOURS))
+        hours = max(1, min(hours, max(1, LIVE_HISTORY_RETENTION_HOURS)))
+        cutoff_epoch = time.time() - (hours * 3600)
+
+        rows = get_live_snapshot_rows(force=force_fresh)
+        if city:
+            city_row = fetch_live_city_row(city, allow_cached_payload=not force_fresh)
+            if city_row:
+                update_live_histories([city_row])
+
+        with LIVE_STATE_LOCK:
+            if city:
+                entries = []
+                requested_key = normalize_query_text(city).lower().strip()
+                for city_key, history in LIVE_CITY_HISTORY.items():
+                    if _city_key_match(requested_key, city_key):
+                        entries.extend(list(history))
+            else:
+                entries = list(LIVE_GLOBAL_HISTORY)
+        entries = [
+            entry for entry in entries
+            if float(entry.get("timestamp_epoch") or 0.0) >= cutoff_epoch
+        ]
+
+        if not entries:
+            if city:
+                row = select_live_row_for_city(rows, city)
+                if row:
+                    entries = [_history_entry_from_row(row)]
+            else:
+                # Seed with one aggregate point so heatmap can still render.
+                aqi_vals = [_to_float_or_none(r.get("aqi")) for r in rows]
+                aqi_vals = [v for v in aqi_vals if v is not None]
+                if aqi_vals:
+                    entries = [{
+                        "timestamp_epoch": time.time(),
+                        "aqi": float(sum(aqi_vals) / len(aqi_vals)),
+                        "pollutants": {},
+                        "weather": {},
+                    }]
+
+        if not entries:
+            if city:
+                return jsonify({"error": f"No live heatmap data for '{city}'"}), 404
+            return jsonify({"error": "No valid AQI values for heatmap"}), 404
+
+        return jsonify(_build_heatmap_from_entries(entries))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/city-ranking")
 def city_ranking():
-    if df is None:
-        return jsonify({"error":"No data"}), 404
     try:
-        latest = df.sort_values("timestamp").groupby("city").last().reset_index()
-        latest = latest.sort_values("aqi", ascending=False)
+        if not WAQI_TOKEN:
+            return jsonify({"error": "WAQI token not configured on server"}), 503
+
+        force_fresh = _is_true_query_flag(request.args.get("fresh"))
+        latest = get_live_snapshot_rows(force=force_fresh)
+        if not latest:
+            return jsonify({"error": "No live data"}), 404
+
+        latest = sorted(
+            latest,
+            key=lambda r: float(r.get("aqi") or float("-inf")),
+            reverse=True,
+        )
         rows = []
-        for _, r in latest.iterrows():
-            cat = get_category(int(r["aqi"]))
+        for r in latest:
+            aqi_val = _to_float_or_none(r.get("aqi"))
+            if aqi_val is None:
+                continue
+            cat = get_category(int(max(0, round(aqi_val))))
             rows.append({
-                "city": r["city"], "country": r["country"],
-                "aqi": float(r["aqi"]),
+                "city": str(r.get("city") or "").strip(),
+                "country": str(r.get("country") or "").strip(),
+                "aqi": float(aqi_val),
                 "level": cat["level"], "color": cat["color"],
-                "pm25": round(float(r["pm25"]),1),
-                "timestamp": r["timestamp"].strftime("%Y-%m-%d %H:%M"),
+                "pm25": round(float(_to_float_or_none((r.get("pollutants") or {}).get("pm25")) or 0.0), 1),
+                "timestamp": _safe_row_timestamp_label(r),
             })
         return jsonify({"cities": rows})
     except Exception as e:
@@ -1342,11 +1947,40 @@ def city_ranking():
 
 @app.route("/api/export")
 def export_data():
-    if df is None:
-        return jsonify({"error":"No data"}), 404
-    return df.to_csv(index=False), 200, {
+    if not WAQI_TOKEN:
+        return jsonify({"error": "WAQI token not configured on server"}), 503
+    rows = get_live_snapshot_rows(force=_is_true_query_flag(request.args.get("fresh")))
+    if not rows:
+        return jsonify({"error": "No live data"}), 404
+
+    export_rows = []
+    for row in rows:
+        pollutants = row.get("pollutants") or {}
+        weather = row.get("weather") or {}
+        export_rows.append({
+            "timestamp": _safe_row_timestamp_label(row),
+            "city": row.get("city"),
+            "country": row.get("country"),
+            "latitude": row.get("latitude"),
+            "longitude": row.get("longitude"),
+            "aqi": row.get("aqi"),
+            "category": row.get("category"),
+            "pm25": pollutants.get("pm25"),
+            "pm10": pollutants.get("pm10"),
+            "no2": pollutants.get("no2"),
+            "so2": pollutants.get("so2"),
+            "o3": pollutants.get("o3"),
+            "co": pollutants.get("co"),
+            "temperature": weather.get("temperature"),
+            "humidity": weather.get("humidity"),
+            "wind_speed": weather.get("wind_speed"),
+            "source": row.get("source") or "live",
+        })
+
+    csv_payload = pd.DataFrame(export_rows).to_csv(index=False)
+    return csv_payload, 200, {
         "Content-Type": "text/csv",
-        "Content-Disposition": "attachment; filename=aqi_export.csv",
+        "Content-Disposition": "attachment; filename=aqi_live_export.csv",
     }
 
 # ═══════════════════════════════════════════════════════════════
