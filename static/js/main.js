@@ -1807,10 +1807,13 @@ function getDominantPollutantFromIaqi(iaqi) {
 function renderNlpAdvice(payload) {
   const summaryEl = $('nlpSummary');
   const maskEl = $('nlpMask');
+  const card = $('nlpAdviceCard');
   if (!summaryEl || !maskEl) return;
   const summary = String(payload?.summary || 'AQI guidance unavailable.').replace(/\s+/g, ' ').trim();
   summaryEl.textContent = summary.length > 150 ? `${summary.slice(0, 149)}…` : summary;
   maskEl.textContent = `Mask: ${payload?.mask_recommendation || '--'}`;
+  // Show the card only once it has real content (removes blank-box-on-load)
+  if (card) card.classList.add('is-visible');
 }
 
 async function loadNlpAdvice(sourceData, reqSeq = null) {
