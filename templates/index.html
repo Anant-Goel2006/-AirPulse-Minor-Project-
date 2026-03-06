@@ -208,6 +208,13 @@
           </div>
         </div>
 
+        <!-- Guidance Bot CTA -->
+        <button class="guidance-bot-btn" id="guidanceBotBtn" title="Ask Guidance Bot for health steps">
+          <i class="fa-solid fa-robot"></i>
+          <span>Ask Guidance Bot</span>
+          <span class="bot-pulse"></span>
+        </button>
+
         <!-- AQI scale -->
         <div class="aqi-scale-wrap">
           <div class="aqi-scale-bar">
@@ -407,6 +414,46 @@
     </div>
   </div>
 </footer>
+
+<!-- ── GUIDANCE BOT MODAL ─────────────────────────────────── -->
+<div class="guidance-modal-overlay" id="guidanceModalOverlay" role="dialog" aria-modal="true" aria-labelledby="guidanceModalTitle" style="display:none">
+  <div class="guidance-modal">
+    <div class="guidance-modal-header">
+      <div class="guidance-modal-title-row">
+        <div class="guidance-modal-icon"><i class="fa-solid fa-robot"></i></div>
+        <div>
+          <h2 class="guidance-modal-title" id="guidanceModalTitle">AQI Guidance Bot</h2>
+          <p class="guidance-modal-city" id="guidanceBotCityLabel">—</p>
+        </div>
+      </div>
+      <button class="guidance-modal-close" id="guidanceModalClose" aria-label="Close guidance bot">&times;</button>
+    </div>
+    <div class="guidance-modal-body" id="guidanceModalBody">
+      <div class="guidance-loading" id="guidanceLoading">
+        <i class="fa-solid fa-circle-notch fa-spin"></i>
+        <span>Generating personalized advice…</span>
+      </div>
+      <div class="guidance-result" id="guidanceResult" style="display:none">
+        <div class="guidance-aqi-badge-row">
+          <span class="guidance-aqi-pill" id="guidanceAqiPill">AQI —</span>
+          <span class="guidance-level-tag" id="guidanceLevelTag">—</span>
+        </div>
+        <p class="guidance-summary" id="guidanceSummary"></p>
+        <div class="guidance-primary-action" id="guidancePrimaryAction">
+          <i class="fa-solid fa-circle-chevron-right"></i>
+          <strong id="guidancePrimaryText"></strong>
+        </div>
+        <h4 class="guidance-steps-title"><i class="fa-solid fa-list-check"></i> Action Steps</h4>
+        <ol class="guidance-steps" id="guidanceSteps"></ol>
+      </div>
+      <div class="guidance-error" id="guidanceError" style="display:none">
+        <i class="fa-solid fa-triangle-exclamation"></i>
+        <p>Could not load guidance right now. Please try again.</p>
+        <button class="guidance-retry-btn" id="guidanceRetryBtn">Retry</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script src="{{ url_for('static', filename='js/main.js') }}?v={{ ts }}"></script>
 </body>

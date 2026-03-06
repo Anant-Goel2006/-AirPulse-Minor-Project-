@@ -8,12 +8,12 @@
 
 /* ── AQI Config ────────────────────────────────────────── */
 const CATS = [
-  { max:50,  level:'Good',       color:'#009966', bg:'#e8f8f2', textClr:'#fff' },
-  { max:100, level:'Moderate',   color:'#c9a000', bg:'#fffde8', textClr:'#000' },
-  { max:150, level:'Poor',       color:'#e67e00', bg:'#fff3e0', textClr:'#fff' },
-  { max:200, level:'Unhealthy',  color:'#cc0033', bg:'#fde8ed', textClr:'#fff' },
-  { max:300, level:'Severe',     color:'#660099', bg:'#f3e8ff', textClr:'#fff' },
-  { max:999, level:'Hazardous',  color:'#7e0023', bg:'#fde8e8', textClr:'#fff' },
+  { max: 50, level: 'Good', color: '#009966', bg: '#e8f8f2', textClr: '#fff' },
+  { max: 100, level: 'Moderate', color: '#c9a000', bg: '#fffde8', textClr: '#000' },
+  { max: 150, level: 'Poor', color: '#e67e00', bg: '#fff3e0', textClr: '#fff' },
+  { max: 200, level: 'Unhealthy', color: '#cc0033', bg: '#fde8ed', textClr: '#fff' },
+  { max: 300, level: 'Severe', color: '#660099', bg: '#f3e8ff', textClr: '#fff' },
+  { max: 999, level: 'Hazardous', color: '#7e0023', bg: '#fde8e8', textClr: '#fff' },
 ];
 const LOCALITY_GUIDANCE_BY_LEVEL = {
   good: 'Great for outdoor plans',
@@ -24,26 +24,27 @@ const LOCALITY_GUIDANCE_BY_LEVEL = {
   hazardous: 'Stay indoors if possible',
 };
 const POLL_CFG = {
-  pm25:{ lbl:'PM₂.₅', unit:'μg/m³', max:300, color:'#e74c3c' },
-  pm10:{ lbl:'PM₁₀',  unit:'μg/m³', max:420, color:'#e67e00' },
-  no2: { lbl:'NO₂',   unit:'ppb',   max:200, color:'#8e44ad' },
-  so2: { lbl:'SO₂',   unit:'ppb',   max:100, color:'#2980b9' },
-  o3:  { lbl:'O₃',    unit:'ppb',   max:200, color:'#16a085' },
-  co:  { lbl:'CO',    unit:'ppm',   max:15,  color:'#7f8c8d' },
+  pm25: { lbl: 'PM₂.₅', unit: 'μg/m³', max: 300, color: '#e74c3c' },
+  pm10: { lbl: 'PM₁₀', unit: 'μg/m³', max: 420, color: '#e67e00' },
+  no2: { lbl: 'NO₂', unit: 'ppb', max: 200, color: '#8e44ad' },
+  so2: { lbl: 'SO₂', unit: 'ppb', max: 100, color: '#2980b9' },
+  o3: { lbl: 'O₃', unit: 'ppb', max: 200, color: '#16a085' },
+  co: { lbl: 'CO', unit: 'ppm', max: 15, color: '#7f8c8d' },
 };
 
-const getCat = aqi => CATS.find(c => aqi <= c.max) || CATS[CATS.length-1];
+const getCat = aqi => CATS.find(c => aqi <= c.max) || CATS[CATS.length - 1];
 function getLocalityGuidance(aqi) {
   const cat = getCat(Number(aqi));
   const key = String(cat?.level || '').toLowerCase();
   return LOCALITY_GUIDANCE_BY_LEVEL[key] || 'Follow local AQI precautions';
 }
 const $ = id => document.getElementById(id);
-const css = (k,v) => document.documentElement.style.setProperty(k,v);
+const css = (k, v) => document.documentElement.style.setProperty(k, v);
 const fmtAqi = v => Math.round(v);
 
 let curCity = 'delhi', curLiveData = null;
 let curCityDisplay = 'Delhi';
+let currentUserCity = 'delhi';
 let curHeroQueryHint = 'delhi';
 let trendChartInst = null, donutChartInst = null, forecastChartInst = null;
 let aqiMap = null, mapMarkers = [], markerCluster = null;
@@ -135,11 +136,19 @@ const CITY_BG_ALIASES = {
 };
 
 /* ── Toast ──────────────────────────────────────────────── */
-function toast(msg, type='info') {
-  const icons = { info:'fa-circle-info', success:'fa-circle-check', error:'fa-circle-xmark' };
+let lastToastMsg = '';
+let lastToastTime = 0;
+
+function toast(msg, type = 'info') {
+  const now = Date.now();
+  if (msg === lastToastMsg && now - lastToastTime < 3000) return;
+  lastToastMsg = msg;
+  lastToastTime = now;
+
+  const icons = { info: 'fa-circle-info', success: 'fa-circle-check', error: 'fa-circle-xmark' };
   const t = document.createElement('div');
   t.className = `toast ${type}`;
-  t.innerHTML = `<i class="fa-solid ${icons[type]}"></i> ${msg}`;
+  t.innerHTML = `<i class="fa-solid ${icons[type] || 'fa-circle-info'}"></i> ${msg}`;
   $('toastContainer').appendChild(t);
   setTimeout(() => t.remove(), 3500);
 }
@@ -151,7 +160,7 @@ function hideLoading() {
 }
 
 // Helper: wrap a promise with a timeout that resolves to null on timeout
-function withTimeout(promise, ms=5000) {
+function withTimeout(promise, ms = 5000) {
   if (!promise || typeof promise.then !== 'function') return Promise.resolve(null);
   return Promise.race([
     promise.catch(() => null),
@@ -174,13 +183,13 @@ async function fetchJsonNoCache(url) {
         } else {
           details = String(await r.text()).trim().slice(0, 200);
         }
-      } catch {}
+      } catch { }
       return { error: `HTTP ${r.status}${details ? `: ${details}` : ''}`, status: r.status };
     }
 
     if (!ctype.includes('application/json')) {
       let raw = '';
-      try { raw = String(await r.text()).slice(0, 200); } catch {}
+      try { raw = String(await r.text()).slice(0, 200); } catch { }
       return { error: 'Non-JSON response from server', status: r.status, raw };
     }
 
@@ -199,24 +208,24 @@ window.addEventListener('error', e => {
   console.error('Global error:', e.error || e.message, src || '');
   hideLoading();
   if (isCrossOriginScriptError || isThirdPartySource) return;
-  toast('An unexpected error occurred. See console.', 'error');
+  toast('An unexpected error occurred.', 'error');
 });
 window.addEventListener('unhandledrejection', ev => {
   const reasonText = String(ev?.reason?.message || ev?.reason || '');
-  const isNetworkNoise = /failed to fetch|networkerror|load failed|timeout/i.test(reasonText);
+  const isNetworkNoise = /failed to fetch|networkerror|load failed|timeout|cancel/i.test(reasonText);
   console.error('Unhandled rejection:', ev.reason);
   hideLoading();
   if (isNetworkNoise) return;
-  toast('An unexpected error occurred. See console.', 'error');
+  toast('An unexpected error occurred.', 'error');
 });
 
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon/2) * Math.sin(dLon/2);
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
@@ -283,6 +292,19 @@ function looksLikeStationArea(token) {
   ];
   if (/\d/.test(t)) return true;
   return areaHints.some(w => t.includes(w));
+}
+
+function resolveCityKey(raw) {
+  const key = slugifyCity(String(raw || '').split(',')[0]);
+  return key || '';
+}
+
+function resolveCountryKey(raw) {
+  if (!raw) return '';
+  const parts = String(raw).trim().split(',');
+  const last = parts[parts.length - 1];
+  const key = slugifyCity(last);
+  return COUNTRY_ALIASES[key] || key || '';
 }
 
 function selectDisplayCity(parts, fallbackCity) {
@@ -618,7 +640,7 @@ function renderAreaAqiList(rows, centerName = '') {
     if (item.country) secondaryParts.push(item.country);
     const secondary = secondaryParts.join(', ') || item.station;
     const guidance = getLocalityGuidance(item.aqi);
-    const thumbUrl = buildLocalityPhotoUrl(item.station || `${primary} ${item.city}`);
+    const thumbUrl = buildLocalityPhotoUrl(item.station || `${primary} ${item.city}`, item.country);
     return `<button class="area-aqi-chip" data-uid="${escapeHtml(item.uid)}" data-station="${escapeHtml(item.station)}" data-display="${escapeHtml(primary)}" data-bghint="${escapeHtml(item.station)}" title="${escapeHtml(item.station)}">
       <span class="area-aqi-thumb" style="background-image:url('${thumbUrl}')"></span>
       <span class="area-aqi-badge" style="background:${cat.color};color:${cat.textClr}">${Math.round(item.aqi)}</span>
@@ -636,6 +658,13 @@ function renderAreaAqiList(rows, centerName = '') {
       const station = String(btn.dataset.station || '').trim();
       const displayName = normalizeDisplayName(btn.dataset.display || station);
       const bgHint = normalizeDisplayName(btn.dataset.bghint || station || displayName);
+
+      const areaAqi = Number(btn.querySelector('.area-aqi-badge').textContent) || 0;
+      renderNlpAdvice({
+        summary: `In ${displayName || station}, AQI is ${Math.round(areaAqi)}. ${getLocalityGuidance(areaAqi)}.`,
+        mask_recommendation: areaAqi <= 100 ? 'Optional for most' : (areaAqi <= 200 ? 'Use N95 mask' : 'Required high-filtration mask')
+      });
+
       if (uid) {
         loadCity({ query: `@${uid}`, displayName, bgHint });
         return;
@@ -775,20 +804,31 @@ function buildSeededHeroImage(seed) {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
-function buildLocalityPhotoUrl(labelText) {
+function buildLocalityPhotoUrl(labelText, countryLabel = '') {
   const raw = String(labelText || '').trim();
-  const lock = (hashSeed(raw || 'locality') % 991) + 1;
-  const slug = slugifyCity(raw);
-  const terms = (slug ? slug.split('-').filter(Boolean).slice(0, 3) : []);
-  const tag = terms.length ? `${terms.join(',')},city` : 'city,street,india';
-  return `https://loremflickr.com/480/300/${tag}?lock=${lock}`;
+  const cityKey = resolveCityKey(raw);
+  const countryKey = resolveCountryKey(countryLabel);
+
+  if (heroManifestCache) {
+    if (cityKey && heroManifestCache.cities?.[cityKey]?.imageUrl) {
+      return heroManifestCache.cities[cityKey].imageUrl;
+    }
+    if (countryKey && heroManifestCache.countries?.[countryKey]?.imageUrl) {
+      return heroManifestCache.countries[countryKey].imageUrl;
+    }
+  }
+  // Deterministic colour SVG fallback based on label hash
+  const hash = Array.from(raw).reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0);
+  const hue = Math.abs(hash) % 360;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='480' height='300'><rect width='480' height='300' fill='hsl(${hue},45%,38%)'/></svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
 async function resolveHeroBg(cityName, countryName, queryHint = '') {
   const cityText = String(cityName || '').trim();
   const countryText = String(countryName || '').trim();
   const hintText = String(queryHint || '').trim();
-  const countryKey = resolveCountryKey(countryText);
+  const countryKey = resolveCountryKey(countryText) || slugifyCity(countryText);
   const cacheKey = `${slugifyCity(cityText)}|${countryKey}|${slugifyCity(hintText)}`;
   const cached = heroBgConfigCache.get(cacheKey);
   if (cached) return cached;
@@ -814,14 +854,13 @@ async function resolveHeroBg(cityName, countryName, queryHint = '') {
   }
 
   if (!resolved) {
-    const hintSeed = slugifyCity(hintText) || slugifyCity(hintedCity);
-    const citySeed = slugifyCity(cityText);
-    const remoteSeed = hintSeed || citySeed || countryKey || slugifyCity(countryText);
-    if (remoteSeed) {
-      resolved = {
-        imageUrl: buildSeededHeroImage(remoteSeed),
-        focalPoint: 'center'
-      };
+    // Use deterministic coloured SVG fallback so there is always a background
+    const seed = slugifyCity(hintText) || slugifyCity(cityText) || countryKey || slugifyCity(countryText);
+    if (seed) {
+      const hash = Array.from(seed).reduce((h, c) => (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0);
+      const hue = Math.abs(hash) % 360;
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='1920' height='1080'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='hsl(${hue},55%,28%)'/><stop offset='100%' stop-color='hsl(${(hue + 60) % 360},45%,18%)'/></linearGradient></defs><rect width='1920' height='1080' fill='url(#g)'/></svg>`;
+      resolved = { imageUrl: `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`, focalPoint: 'center' };
     }
   }
 
@@ -865,14 +904,14 @@ function preloadBackgroundImage(url) {
   return loadPromise;
 }
 
-function setHeroLayerImage(el, imageUrl, focalPoint='center') {
+function setHeroLayerImage(el, imageUrl, focalPoint = 'center') {
   if (!el || !imageUrl) return;
   el.style.backgroundImage = `url("${imageUrl}")`;
   el.style.setProperty('--bg-pos', focalPoint || 'center');
   el.style.backgroundPosition = focalPoint || 'center';
 }
 
-function applyPageBackgroundImage(imageUrl, focalPoint='center') {
+function applyPageBackgroundImage(imageUrl, focalPoint = 'center') {
   const safeUrl = cacheBustedImageUrl(imageUrl);
   if (!safeUrl) return;
   css('--page-bg-image', `url("${safeUrl}")`);
@@ -948,7 +987,7 @@ function applyScenePhase(phase) {
   }
 }
 
-function crossfadeHeroImage(imageUrl, focalPoint='center') {
+function crossfadeHeroImage(imageUrl, focalPoint = 'center') {
   const primary = $('heroBgPrimary');
   const secondary = $('heroBgSecondary');
   if (!primary || !secondary || !imageUrl) return;
@@ -1078,7 +1117,7 @@ function applySelectedCityVisual(city, reqSeq) {
     level,
     updatedAt: $('aqiUpdated')?.textContent || 'Updated: --',
     timeIso: curTimeIso || '',
-  }, reqSeq).catch(() => {});
+  }, reqSeq).catch(() => { });
 }
 
 /* ── Refresh button ─────────────────────────────────────── */
@@ -1106,7 +1145,7 @@ async function getApproxCoordsFromIP() {
       if (Number.isFinite(lat) && Number.isFinite(lng)) {
         return { lat, lng, provider: url };
       }
-    } catch {}
+    } catch { }
   }
   return null;
 }
@@ -1136,7 +1175,7 @@ async function loadLiveFromCoords(lat, lng, modeLabel = 'your location') {
       showLocationAqiPopup(lat, lng, nearby.data);
       return true;
     }
-  } catch {}
+  } catch { }
 
   try {
     const geo = await fetchJsonNoCache(`/api/live/geo/${latStr}/${lngStr}`);
@@ -1156,7 +1195,7 @@ async function loadLiveFromCoords(lat, lng, modeLabel = 'your location') {
       showLocationAqiPopup(lat, lng, geo.data);
       return true;
     }
-  } catch {}
+  } catch { }
 
   const nearest = await getNearestCityFromCsv(lat, lng);
   if (nearest?.city) {
@@ -1234,9 +1273,9 @@ function showLocationAqiPopup(lat, lng, data) {
       <div style="font-size:.85rem;color:#4a5568">${cat.text || ''}</div>
     </div>`;
 
-    const m = L.circleMarker([markerLat, markerLng], { radius:10, color:cat.color, fillColor:cat.color, fillOpacity:.9 }).addTo(aqiMap);
+    const m = L.circleMarker([markerLat, markerLng], { radius: 10, color: cat.color, fillColor: cat.color, fillOpacity: .9 }).addTo(aqiMap);
     const user = L.circleMarker([Number(lat), Number(lng)], {
-      radius:6, color:'#1d4ed8', fillColor:'#3b82f6', fillOpacity:.85, weight:2
+      radius: 6, color: '#1d4ed8', fillColor: '#3b82f6', fillOpacity: .85, weight: 2
     }).addTo(aqiMap);
     m.bindPopup(html).openPopup();
     // remove temporary markers
@@ -1244,7 +1283,7 @@ function showLocationAqiPopup(lat, lng, data) {
       if (aqiMap.hasLayer(m)) aqiMap.removeLayer(m);
       if (aqiMap.hasLayer(user)) aqiMap.removeLayer(user);
     }, 20000);
-  } catch (e) {}
+  } catch (e) { }
 }
 
 /* ── City chips ─────────────────────────────────────────── */
@@ -1491,10 +1530,11 @@ async function loadCity(cityInput) {
     loadDonut();
     loadNlpAdvice(j.data, reqSeq);
     const analyticsCity = normalizeDisplayName(
-      parseCityCountry(j?.data?.city?.name || curCityDisplay || city, curCityDisplay || city).city
+      parseMapStationLocation(j?.data?.city?.name || curCityDisplay || city, curCityDisplay || city).city
     ) || curCityDisplay || city;
-    loadTrend(analyticsCity).catch(() => {});
-    loadHeatmap(analyticsCity).catch(() => {});
+    currentUserCity = analyticsCity;
+    loadTrend(analyticsCity).catch(() => { });
+    loadHeatmap(analyticsCity).catch(() => { });
     loadStats();
     loadRanking();
   } catch (e) {
@@ -1582,8 +1622,9 @@ async function loadLocalAqi(cityOverride = null, reqSeq = null) {
     loadNlpAdvice(curLiveData, reqSeq);
     loadAreaAqiList(`${d.city || cityToLoad}`, reqSeq);
     const analyticsCity = normalizeDisplayName(d.city || cityToLoad || curCityDisplay || curCity) || (d.city || cityToLoad || curCity);
-    loadTrend(analyticsCity).catch(() => {});
-    loadHeatmap(analyticsCity).catch(() => {});
+    currentUserCity = analyticsCity;
+    loadTrend(analyticsCity).catch(() => { });
+    loadHeatmap(analyticsCity).catch(() => { });
     loadStats();
     loadRanking();
   } catch (e) {
@@ -1595,11 +1636,34 @@ async function loadLocalAqi(cityOverride = null, reqSeq = null) {
 function renderHero(data, reqSeq = null, displayNameHint = '') {
   const aqi = resolveLiveAqi(data, getDisplayedAqiFallback()) ?? getDisplayedAqiFallback();
   const cat = getCat(aqi);
-  const loc = parseCityCountry(data.city?.name || curCity, curCity);
+  const loc = parseMapStationLocation(data.city?.name || curCity, curCity);
   const hintedCity = normalizeDisplayName(displayNameHint);
   if (hintedCity) curHeroQueryHint = hintedCity;
   curTimeIso = data?.time?.iso || curTimeIso || '';
-  updateHeroUI(hintedCity || loc.city, loc.country, aqi, cat, cat.text || '', reqSeq);
+
+  let displayTitle = loc.city;
+  if (loc.area && normalizeCityKey(loc.area) !== normalizeCityKey(loc.city)) {
+    displayTitle = `${loc.area}, ${loc.city}`;
+  } else if (hintedCity && normalizeCityKey(hintedCity) !== normalizeCityKey(loc.city)) {
+    if (looksLikeStationArea(hintedCity)) {
+      displayTitle = `${hintedCity}, ${loc.city}`;
+    } else {
+      displayTitle = hintedCity;
+    }
+  }
+
+  updateHeroUI(displayTitle, loc.country, aqi, cat, cat.text || '', reqSeq);
+
+  // Update Guidance Bot with fresh city/AQI state
+  if (typeof GuidanceBot !== 'undefined') {
+    GuidanceBot.setState({
+      aqi,
+      city: loc.city || curCity,
+      country: loc.country || '',
+      dominant: data.dominentpol || data.dominant || 'pm25',
+      timestamp_iso: data?.time?.iso || '',
+    });
+  }
 
   const iaqi = data.iaqi || {};
   updatePollutantsFromIaqi(iaqi, data.dominentpol);
@@ -1636,7 +1700,7 @@ function updateHeroUI(cityName, country, aqi, cat, desc, reqSeq = null) {
 
   // Gauge arc — circumference = 2π×85 ≈ 534
   const circ = 534;
-  const pct  = Math.min(aqi / 500, 1);
+  const pct = Math.min(aqi / 500, 1);
   const offset = circ - circ * pct;
   const arc = $('gaugeProgress');
   if (arc) {
@@ -1669,10 +1733,10 @@ function updateHeroUI(cityName, country, aqi, cat, desc, reqSeq = null) {
 // Apply background class based on AQI category
 function setAqiBackground(cat) {
   try {
-    document.body.classList.remove('bg-good','bg-moderate','bg-poor','bg-unhealthy','bg-severe','bg-hazardous');
+    document.body.classList.remove('bg-good', 'bg-moderate', 'bg-poor', 'bg-unhealthy', 'bg-severe', 'bg-hazardous');
     const cls = 'bg-' + (cat.level || '').toLowerCase();
     document.body.classList.add(cls);
-  } catch (e) {}
+  } catch (e) { }
 }
 
 function updatePollutantsFromIaqi(iaqi, dominant) {
@@ -1780,7 +1844,7 @@ async function loadNlpAdvice(sourceData, reqSeq = null) {
 function estimateAqiFromPoll(key, val) {
   if (val == null) return 0;
   // Simplified estimates — use for coloring only
-  const scales = { pm25:300, pm10:420, no2:200, so2:100, o3:200, co:15 };
+  const scales = { pm25: 300, pm10: 420, no2: 200, so2: 100, o3: 200, co: 15 };
   return Math.round((val / (scales[key] || 200)) * 300);
 }
 
@@ -1840,17 +1904,27 @@ function buildDeterministicForecast(baseValue) {
 
 
 function updateWeather(w) {
-  $('qsTemp').textContent  = w.temperature ? w.temperature.toFixed(1) + ' °C'  : '—';
-  $('qsHum').textContent   = w.humidity    ? w.humidity.toFixed(1)    + ' %'   : '—';
-  $('qsWind').textContent  = w.wind_speed  ? w.wind_speed.toFixed(1)  + ' m/s' : '—';
+  $('qsTemp').textContent = w.temperature ? w.temperature.toFixed(1) + ' °C' : '—';
+  $('qsHum').textContent = w.humidity ? w.humidity.toFixed(1) + ' %' : '—';
+  $('qsWind').textContent = w.wind_speed ? w.wind_speed.toFixed(1) + ' m/s' : '—';
+}
+
+// Alias: renderHero uses updateWeatherFromIaqi which maps iaqi keys to weather fields
+function updateWeatherFromIaqi(iaqi) {
+  const w = {
+    temperature: iaqi?.t?.v ?? null,
+    humidity: iaqi?.h?.v ?? null,
+    wind_speed: iaqi?.w?.v ?? null,
+  };
+  updateWeather(w);
 }
 
 function lightenColor(hex) {
   // Returns a slightly lighter version for gradient
   const n = parseInt(hex.slice(1), 16);
   const r = Math.min(255, ((n >> 16) & 0xff) + 40);
-  const g = Math.min(255, ((n >> 8)  & 0xff) + 40);
-  const b = Math.min(255, (n         & 0xff) + 40);
+  const g = Math.min(255, ((n >> 8) & 0xff) + 40);
+  const b = Math.min(255, (n & 0xff) + 40);
   return `rgb(${r},${g},${b})`;
 }
 
@@ -1878,7 +1952,7 @@ function renderForecast(forecast, curAqi) {
   const labels = [], vals = [];
 
   if (fc.length) {
-    fc.slice(0,7).forEach(d => {
+    fc.slice(0, 7).forEach(d => {
       labels.push(formatForecastLabel(d.day, labels.length));
       vals.push(d.avg ?? null);
     });
@@ -1895,36 +1969,36 @@ function renderForecast(forecast, curAqi) {
   const suggestedMax = Math.max(50, Math.ceil((highest * 1.25) / 10) * 10);
 
   forecastChartInst = new Chart(cvs, {
-    type:'line',
-    data:{
+    type: 'line',
+    data: {
       labels,
-      datasets:[{
+      datasets: [{
         label: cfg.lbl,
         data: vals,
         borderColor: cfg.color,
         backgroundColor: cfg.color + '18',
-        fill:true, tension:.4,
-        pointBackgroundColor: cfg.color, pointRadius:4, borderWidth:2,
-        pointHoverRadius:6,
+        fill: true, tension: .4,
+        pointBackgroundColor: cfg.color, pointRadius: 4, borderWidth: 2,
+        pointHoverRadius: 6,
       }]
     },
-    options:{
-      responsive:true, maintainAspectRatio:false,
-      plugins:{
-        legend:{display:false},
-        tooltip:{
-          backgroundColor:'rgba(255,255,255,.96)', titleColor:'#1a1d2e', bodyColor:'#4a5568',
-          borderColor:'#e8eaed', borderWidth:1, padding:10,
-          callbacks:{ label: ctx => ` ${ctx.parsed.y} ${cfg.unit}` }
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(255,255,255,.96)', titleColor: '#1a1d2e', bodyColor: '#4a5568',
+          borderColor: '#e8eaed', borderWidth: 1, padding: 10,
+          callbacks: { label: ctx => ` ${ctx.parsed.y} ${cfg.unit}` }
         }
       },
-      scales:{
-        x:{ ticks:{color:'#9ca3af',font:{family:'Plus Jakarta Sans',size:10}}, grid:{color:'rgba(0,0,0,.04)'} },
-        y:{
-          beginAtZero:true,
+      scales: {
+        x: { ticks: { color: '#9ca3af', font: { family: 'Plus Jakarta Sans', size: 10 } }, grid: { color: 'rgba(0,0,0,.04)' } },
+        y: {
+          beginAtZero: true,
           suggestedMax,
-          ticks:{color:'#9ca3af',font:{family:'Plus Jakarta Sans',size:10}},
-          grid:{color:'rgba(0,0,0,.04)'}
+          ticks: { color: '#9ca3af', font: { family: 'Plus Jakarta Sans', size: 10 } },
+          grid: { color: 'rgba(0,0,0,.04)' }
         }
       }
     }
@@ -1941,8 +2015,7 @@ function getRequestedTrendCity(explicitCity = undefined) {
   const sel = $('trendCitySelect');
   const picked = String(sel?.value || '').trim();
   if (picked) return picked;
-  const fallbackCity = isUidQuery(curCity) ? (curCityDisplay || '') : (curCity || '');
-  return String(fallbackCity).trim();
+  return currentUserCity;
 }
 
 async function loadTrend(city = undefined) {
@@ -1951,47 +2024,49 @@ async function loadTrend(city = undefined) {
     const url = requestedCity
       ? `/api/historical?city=${encodeURIComponent(requestedCity)}&hours=24&fresh=1`
       : '/api/historical?hours=24&fresh=1';
-    const r = await fetch(url);
-    const d = await r.json();
-    if (d.error) return;
+    const d = await fetchJsonNoCache(url);
+    if (d.error || !d.timestamps) {
+      if (trendChartInst) { trendChartInst.destroy(); trendChartInst = null; }
+      return;
+    }
 
-    if (trendChartInst) { trendChartInst.destroy(); trendChartInst=null; }
+    if (trendChartInst) { trendChartInst.destroy(); trendChartInst = null; }
     const cvs = $('trendChart');
     if (!cvs) return;
 
     trendChartInst = new Chart(cvs, {
-      type:'line',
-      data:{
+      type: 'line',
+      data: {
         labels: d.timestamps,
-        datasets:[{
-          label:'AQI',
+        datasets: [{
+          label: 'AQI',
           data: d.aqi,
           borderColor: getComputedStyle(document.documentElement).getPropertyValue('--aqi-color').trim() || '#4ba9ff',
           backgroundColor: 'rgba(75,169,255,.07)',
-          fill:true, tension:.4,
+          fill: true, tension: .4,
           pointBackgroundColor: d.aqi.map(v => getCat(v).color),
-          pointRadius:3, borderWidth:2.5,
-          segment:{
+          pointRadius: 3, borderWidth: 2.5,
+          segment: {
             borderColor: ctx => getCat(ctx.p1.parsed.y).color,
           }
         }]
       },
-      options:{
-        responsive:true, maintainAspectRatio:false,
-        plugins:{
-          legend:{display:false},
-          tooltip:{
-            backgroundColor:'rgba(255,255,255,.96)', titleColor:'#1a1d2e', bodyColor:'#4a5568',
-            borderColor:'#e8eaed', borderWidth:1, padding:10,
-            callbacks:{ label: ctx => ` AQI: ${Math.round(ctx.parsed.y)} — ${getCat(ctx.parsed.y).level}` }
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: 'rgba(255,255,255,.96)', titleColor: '#1a1d2e', bodyColor: '#4a5568',
+            borderColor: '#e8eaed', borderWidth: 1, padding: 10,
+            callbacks: { label: ctx => ` AQI: ${Math.round(ctx.parsed.y)} — ${getCat(ctx.parsed.y).level}` }
           }
         },
-        scales:{
-          x:{ ticks:{color:'#9ca3af',font:{family:'Plus Jakarta Sans',size:10}}, grid:{display:false} },
-          y:{
-            ticks:{color:'#9ca3af',font:{family:'Plus Jakarta Sans',size:10}},
-            grid:{color:'rgba(0,0,0,.04)'},
-            min:0,
+        scales: {
+          x: { ticks: { color: '#9ca3af', font: { family: 'Plus Jakarta Sans', size: 10 } }, grid: { display: false } },
+          y: {
+            ticks: { color: '#9ca3af', font: { family: 'Plus Jakarta Sans', size: 10 } },
+            grid: { color: 'rgba(0,0,0,.04)' },
+            min: 0,
           }
         }
       }
@@ -1999,13 +2074,12 @@ async function loadTrend(city = undefined) {
 
     // Populate city dropdown
     populateCitySelect(requestedCity);
-  } catch {}
+  } catch { }
 }
 
 async function populateCitySelect(selectedCity = '') {
   try {
-    const r = await fetch('/api/city-ranking?fresh=1');
-    const d = await r.json();
+    const d = await fetchJsonNoCache('/api/city-ranking?fresh=1');
     const sel = $('trendCitySelect');
     if (!sel || !d.cities) return;
     sel.innerHTML = '<option value="">Current Selection</option>' +
@@ -2023,13 +2097,13 @@ async function populateCitySelect(selectedCity = '') {
       });
       sel.dataset.bound = '1';
     }
-  } catch {}
+  } catch { }
 }
 
 /* ── Donut chart ────────────────────────────────────────── */
 async function loadDonut() {
   try {
-    if (donutChartInst) { donutChartInst.destroy(); donutChartInst=null; }
+    if (donutChartInst) { donutChartInst.destroy(); donutChartInst = null; }
     const cvs = $('donutChart');
     if (!cvs) return;
 
@@ -2052,27 +2126,27 @@ async function loadDonut() {
     const keys = Object.keys(POLL_CFG);
 
     donutChartInst = new Chart(cvs, {
-      type:'doughnut',
-      data:{
+      type: 'doughnut',
+      data: {
         labels: keys.map(k => POLL_CFG[k].lbl),
-        datasets:[{
+        datasets: [{
           data: keys.map(k => Number.isFinite(Number(polls[k])) ? Number(polls[k]) : 0),
           backgroundColor: keys.map(k => POLL_CFG[k].color),
-          borderWidth:2, borderColor:'#fff', hoverOffset:10,
+          borderWidth: 2, borderColor: '#fff', hoverOffset: 10,
         }]
       },
-      options:{
-        responsive:true, maintainAspectRatio:false, cutout:'60%',
-        plugins:{
-          legend:{ position:'right', labels:{ color:'#4a5568', font:{family:'Plus Jakarta Sans',size:11}, boxWidth:10, padding:10 } },
-          tooltip:{
-            backgroundColor:'rgba(255,255,255,.96)', titleColor:'#1a1d2e', bodyColor:'#4a5568',
-            borderColor:'#e8eaed', borderWidth:1, padding:10,
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '60%',
+        plugins: {
+          legend: { position: 'right', labels: { color: '#4a5568', font: { family: 'Plus Jakarta Sans', size: 11 }, boxWidth: 10, padding: 10 } },
+          tooltip: {
+            backgroundColor: 'rgba(255,255,255,.96)', titleColor: '#1a1d2e', bodyColor: '#4a5568',
+            borderColor: '#e8eaed', borderWidth: 1, padding: 10,
           }
         }
       }
     });
-  } catch {}
+  } catch { }
 }
 
 /* ── Map ────────────────────────────────────────────────── */
@@ -2081,14 +2155,14 @@ function initMap() {
   if (!mapEl || aqiMap) return;
 
   try {
-    aqiMap = L.map('aqiMap', { zoomControl:true, scrollWheelZoom:true }).setView([20,78], 4);
+    aqiMap = L.map('aqiMap', { zoomControl: true, scrollWheelZoom: true }).setView([20, 78], 4);
 
     // create marker cluster group
     markerCluster = L.markerClusterGroup();
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution:'© OpenStreetMap © CARTO',
-      subdomains:'abcd', maxZoom:19
+      attribution: '© OpenStreetMap © CARTO',
+      subdomains: 'abcd', maxZoom: 19
     }).addTo(aqiMap);
 
     // add cluster layer to map
@@ -2152,12 +2226,12 @@ async function loadMapData() {
         const place = parseMapStationLocation(loc.stationName || '', curCity);
         const cat = getCat(aqiNum);
         const icon = L.divIcon({
-          className:'aqi-marker-label',
-          html:`<div class="aql-inner" style="border-color:${cat.color};color:${cat.color}">
+          className: 'aqi-marker-label',
+          html: `<div class="aql-inner" style="border-color:${cat.color};color:${cat.color}">
             <div>${Math.round(aqiNum)}</div>
             <div style="font-size:.56rem;font-weight:600;color:#9ca3af">${place.city}</div>
           </div>`,
-          iconAnchor:[30,20]
+          iconAnchor: [30, 20]
         });
 
         const m = L.marker([lat, lng], { icon });
@@ -2191,7 +2265,7 @@ async function loadMapData() {
 }
 function heatColor(val) {
   if (val === 0) return '#f0f0f0';
-  if (val <= 50)  return '#009966';
+  if (val <= 50) return '#009966';
   if (val <= 100) return '#ffde33';
   if (val <= 150) return '#ff9933';
   if (val <= 200) return '#cc0033';
@@ -2205,48 +2279,53 @@ async function loadHeatmap(city = undefined) {
     const url = requestedCity
       ? `/api/heatmap?city=${encodeURIComponent(requestedCity)}&hours=24&fresh=1`
       : '/api/heatmap?hours=24&fresh=1';
-    const r = await fetch(url);
-    const d = await r.json();
-    if (!d.data) return;
+    const d = await fetchJsonNoCache(url);
 
     const cont = $('heatmapContainer');
     if (!cont) return;
 
-    const hourLabels = Array.from({length:24},(_,i)=>i%3===0?i+'h':'');
+    if (d.error || !d.data) {
+      cont.innerHTML = `<div style="padding:24px;text-align:center;color:#9ca3af;font-size:.85rem">No heatmap data yet for ${escapeHtml(requestedCity || 'selected city')}. Data accumulates over time.</div>`;
+      return;
+    }
+
+    const hourLabels = Array.from({ length: 24 }, (_, i) => i % 3 === 0 ? String(i) + 'h' : '');
 
     let html = `<table class="heatmap-table"><thead><tr><th></th>`;
-    hourLabels.forEach(l => html += `<th>${l}</th>`);
+    hourLabels.forEach(l => html += `<th>${escapeHtml(l)}</th>`);
     html += '</tr></thead><tbody>';
 
     d.days.forEach((day, di) => {
-      html += `<tr><th style="text-align:right;padding-right:8px;font-size:.6rem;color:#9ca3af;white-space:nowrap">${day.slice(0,3)}</th>`;
-      d.hours.forEach((h, hi) => {
-        const v = d.data[di][hi];
+      html += `<tr><th style="text-align:right;padding-right:8px;font-size:.6rem;color:#9ca3af;white-space:nowrap">${escapeHtml(day.slice(0, 3))}</th>`;
+      (d.hours || []).forEach((h, hi) => {
+        const v = Number(d.data[di]?.[hi]) || 0;
         const bg = heatColor(v);
-        html += `<td style="background:${bg}" title="${day} ${h}:00 — AQI: ${v}">${v > 0 ? Math.round(v) : ''}</td>`;
+        const label = v > 0 ? Math.round(v) : '';
+        html += `<td style="background:${bg}" title="${escapeHtml(day)} ${h}:00 — AQI: ${v}">${label}</td>`;
       });
       html += '</tr>';
     });
 
     html += '</tbody></table>';
     cont.innerHTML = html;
-  } catch {}
+  } catch (e) {
+    console.warn('loadHeatmap error:', e);
+  }
 }
 
 /* ── City Ranking Table ─────────────────────────────────── */
 async function loadRanking() {
   try {
-    const r = await fetch('/api/city-ranking?fresh=1');
-    const d = await r.json();
+    const d = await fetchJsonNoCache('/api/city-ranking?fresh=1');
     if (!d.cities) return;
 
-    $('rankingBody').innerHTML = d.cities.map((c,i) => {
+    $('rankingBody').innerHTML = d.cities.map((c, i) => {
       const cat = getCat(c.aqi);
       const txtClr = c.aqi <= 100 ? '#000' : '#fff';
       const cityLabel = titleCaseWords(c.city || '');
       const countryLabel = titleCaseWords(c.country || '');
-      return `<tr class="fade-in stagger-${Math.min(i+1,5)}">
-        <td style="font-size:.72rem;font-weight:600;color:#9ca3af">${i+1}</td>
+      return `<tr class="fade-in stagger-${Math.min(i + 1, 5)}">
+        <td style="font-size:.72rem;font-weight:600;color:#9ca3af">${i + 1}</td>
         <td style="font-weight:700">${cityLabel}</td>
         <td style="color:#9ca3af;font-size:.78rem">${countryLabel || '—'}</td>
         <td><span class="aqi-badge-cell" style="background:${cat.color};color:${txtClr}">${Math.round(c.aqi)}</span></td>
@@ -2255,24 +2334,23 @@ async function loadRanking() {
         <td style="font-size:.7rem;color:#9ca3af">${c.timestamp}</td>
       </tr>`;
     }).join('');
-  } catch {}
+  } catch { }
 }
 
 /* ── Stats Cards ────────────────────────────────────────── */
 async function loadStats() {
   try {
-    const r = await fetch('/api/statistics?fresh=1');
-    const d = await r.json();
+    const d = await fetchJsonNoCache('/api/statistics?fresh=1');
     if (d.error) return;
 
     animateCount($('statReadings'), d.total_readings);
     animateCount($('statAvgAqi'), d.avg_aqi, 1);
     animateCount($('statMaxAqi'), d.max_aqi);
     animateCount($('statCities'), d.cities_monitored);
-  } catch {}
+  } catch { }
 }
 
-function animateCount(el, target, decimals=0) {
+function animateCount(el, target, decimals = 0) {
   if (!el) return;
   const numericTarget = Number(target);
   const safeTarget = Number.isFinite(numericTarget) ? numericTarget : 0;
@@ -2280,7 +2358,7 @@ function animateCount(el, target, decimals=0) {
   const startTime = performance.now();
   const update = now => {
     const t = Math.min((now - startTime) / dur, 1);
-    const eased = 1 - Math.pow(1-t, 3);
+    const eased = 1 - Math.pow(1 - t, 3);
     el.textContent = (start + (safeTarget - start) * eased).toFixed(decimals);
     if (t < 1) requestAnimationFrame(update);
     else el.textContent = safeTarget.toFixed(decimals);
@@ -2365,4 +2443,124 @@ setInterval(() => {
     // always hide loader after a short delay
     setTimeout(hideLoading, 300);
   }
+})();
+
+/* ── Guidance Bot ───────────────────────────────────────── */
+const GuidanceBot = (() => {
+  // Track current live data for the advice API call
+  let _state = { aqi: 0, city: 'delhi', country: '', dominant: 'pm25', timestamp_iso: '' };
+
+  function setState(data) {
+    if (!data) return;
+    _state.aqi = Number(data.aqi || _state.aqi) || 0;
+    _state.city = String(data.city || _state.city || 'delhi');
+    _state.country = String(data.country || _state.country || '');
+    _state.dominant = String(data.dominant || data.dominentpol || _state.dominant || 'pm25');
+    _state.timestamp_iso = String(data.timestamp_iso || data.timestamp || _state.timestamp_iso || '');
+  }
+
+  function _show(id) { const el = $(id); if (el) el.style.display = ''; }
+  function _hide(id) { const el = $(id); if (el) el.style.display = 'none'; }
+
+  function openModal() {
+    const overlay = $('guidanceModalOverlay');
+    if (!overlay) return;
+    overlay.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+    _show('guidanceLoading');
+    _hide('guidanceResult');
+    _hide('guidanceError');
+    const cityLbl = $('guidanceBotCityLabel');
+    if (cityLbl) cityLbl.textContent = _state.city ? _state.city.charAt(0).toUpperCase() + _state.city.slice(1) : '—';
+    fetchAdvice();
+  }
+
+  function closeModal() {
+    const overlay = $('guidanceModalOverlay');
+    if (!overlay) return;
+    overlay.style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  async function fetchAdvice() {
+    _show('guidanceLoading');
+    _hide('guidanceResult');
+    _hide('guidanceError');
+    try {
+      const params = new URLSearchParams({
+        city: _state.city,
+        country: _state.country,
+        aqi: _state.aqi,
+        dominant: _state.dominant,
+        timestamp_iso: _state.timestamp_iso,
+      });
+      const resp = await fetchJsonNoCache(`/api/nlp/advice?${params}`);
+      const advice = (resp.data || resp.advice || resp);
+      if (!advice || advice.error) throw new Error(advice?.error || 'Empty advice');
+      renderAdvice(advice);
+    } catch (e) {
+      console.warn('GuidanceBot: advice fetch failed', e);
+      _hide('guidanceLoading');
+      _show('guidanceError');
+    }
+  }
+
+  function renderAdvice(adv) {
+    _hide('guidanceLoading');
+    _show('guidanceResult');
+
+    const pill = $('guidanceAqiPill');
+    if (pill) {
+      pill.textContent = `AQI ${Math.round(_state.aqi)}`;
+      pill.style.background = adv.color || '#888';
+    }
+    const levelTag = $('guidanceLevelTag');
+    if (levelTag) levelTag.textContent = adv.risk_level || adv.category || '—';
+
+    const summary = $('guidanceSummary');
+    if (summary) summary.textContent = adv.summary || '';
+
+    // Support both new (action_steps/primary_action) and legacy (precautions/mask_recommendation) response shapes
+    const primaryText = $('guidancePrimaryText');
+    if (primaryText) {
+      primaryText.textContent =
+        adv.primary_action ||
+        adv.mask_recommendation ||
+        adv.best_time_outdoor ||
+        '';
+    }
+
+    const steps = $('guidanceSteps');
+    if (steps) {
+      // Merge precautions + measures from legacy shape into a flat list
+      let items = adv.action_steps || adv.steps || [];
+      if (!items.length) {
+        const precautions = Array.isArray(adv.precautions) ? adv.precautions : [];
+        const measures = Array.isArray(adv.measures) ? adv.measures : [];
+        items = [...precautions, ...measures];
+        // Include best_time_outdoor as a final tip if present
+        if (adv.best_time_outdoor) items.push(`🕐 Best time outdoors: ${adv.best_time_outdoor}`);
+        if (adv.sensitive_groups_note) items.push(`⚠ ${adv.sensitive_groups_note}`);
+      }
+      steps.innerHTML = items.length
+        ? items.map(s => `<li>${escapeHtml(String(s))}</li>`).join('')
+        : '<li>No specific steps available at this time.</li>';
+    }
+  }
+
+  // Bind events
+  document.addEventListener('DOMContentLoaded', () => {
+    const btn = $('guidanceBotBtn');
+    if (btn) btn.addEventListener('click', openModal);
+    const closeBtn = $('guidanceModalClose');
+    if (closeBtn) closeBtn.addEventListener('click', closeModal);
+    const retryBtn = $('guidanceRetryBtn');
+    if (retryBtn) retryBtn.addEventListener('click', fetchAdvice);
+    const overlay = $('guidanceModalOverlay');
+    if (overlay) overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+  });
+
+  // Public setState is wired after a successful loadCity / refreshLiveAqiOnly call
+  return { setState };
 })();

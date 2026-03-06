@@ -31,13 +31,13 @@ except Exception:
 
 # ── Load .env ─────────────────────────────────────────────────
 load_dotenv()
-DEFAULT_WAQI_TOKEN = "5d7668773d931a595fbdaeabb00bfd65481b8db3"
+# NOTE: Do NOT hardcode the token here. Set WAQI_API_TOKEN or WAQI_TOKEN in your .env file
+# To generate a free token visit: https://aqicn.org/data-platform/token/
 
 def resolve_waqi_token():
     candidates = [
         ("WAQI_API_TOKEN", os.getenv("WAQI_API_TOKEN")),
         ("WAQI_TOKEN", os.getenv("WAQI_TOKEN")),
-        ("default", DEFAULT_WAQI_TOKEN),
     ]
     invalid_tokens = {
         "",
@@ -52,6 +52,7 @@ def resolve_waqi_token():
             continue
         if cleaned:
             return cleaned, source
+    print("[WARN] WAQI token not configured — set WAQI_API_TOKEN or WAQI_TOKEN in .env")
     return "", "missing"
 
 WAQI_TOKEN, WAQI_TOKEN_SOURCE = resolve_waqi_token()
@@ -446,28 +447,46 @@ def location_from_station_name(raw_name, fallback=""):
     elif len(country) <= 3 and country.lower() in COUNTRY_CODE_MAP:
         country = COUNTRY_CODE_MAP[country.lower()]
 
-    middle = parts[1:-1] if len(parts) > 2 else parts[:-1]
+    # Use requested-city fallback matching to avoid wrong "city" extraction.
     city = ""
-    for token in reversed(middle):
-        nt = token.lower().strip()
-        if nt in STATE_HINTS:
-            continue
-        if len(nt) <= 2:
-            continue
-        city = token
-        break
+    if fallback_city:
+        for p in reversed(parts):
+            if normalize_query_text(p).lower() == normalize_query_text(fallback_city).lower():
+                city = p
+                break
+    
+    if not city:
+        middle = parts[1:-1] if len(parts) > 2 else parts[:-1]
+        for token in reversed(middle):
+            nt = token.lower().strip()
+            if nt in STATE_HINTS:
+                continue
+            if len(nt) <= 2:
+                continue
+            city = token
+            break
+
     if not city:
         city = parts[0] if len(parts) == 1 else parts[-2]
 
+    # Area extraction logic
     area = ""
     first = parts[0].strip()
     if first and first.lower() != city.lower():
         nt = first.lower()
-        looks_like_area = any(h in nt for h in AREA_HINTS) or any(ch.isdigit() for ch in nt)
-        if not looks_like_area and len(parts) >= 3:
-            looks_like_area = nt not in STATE_HINTS and nt not in {"unknown", "n/a"}
-        if looks_like_area:
+        if len(parts) == 2 and fallback_city and city.lower() == fallback_city.lower():
             area = first
+        else:
+            looks_like_area = any(h in nt for h in AREA_HINTS) or any(ch.isdigit() for ch in nt)
+            if not looks_like_area and len(parts) >= 3:
+                looks_like_area = nt not in STATE_HINTS and nt not in {"unknown", "n/a"}
+            if looks_like_area:
+                area = first
+                
+    if not area and fallback_city and city.lower() != fallback_city.lower():
+        area = city
+        city = fallback_city
+
     return {"area": area, "city": city, "country": country}
 
 
@@ -1204,6 +1223,8 @@ def build_current_aqi_from_live_payload(live_payload, requested_city=""):
         "color": cat["color"],
         "bg": cat["bg"],
         "description": cat["text"],
+        "station_name": station_name,
+        "area": str(loc.get("area") or "").strip(),
         "city": city_name,
         "country": country_name,
         "latitude": lat,
@@ -1284,7 +1305,8 @@ def build_live_row_from_payload(live_payload, requested_city=""):
         "city_key": city_key,
         "city": str(base.get("city") or requested_city or "Unknown").strip(),
         "country": str(base.get("country") or "").strip(),
-        "station_name": station_name,
+        "station_name": str(base.get("station_name") or station_name).strip(),
+        "area": str(base.get("area") or "").strip(),
         "aqi": float(base.get("aqi", 0.0)),
         "category": str(base.get("category") or "Unknown"),
         "color": str(base.get("color") or "#9ca3af"),
@@ -1321,6 +1343,8 @@ def build_current_aqi_response_from_row(row):
         "color": row.get("color"),
         "bg": row.get("bg"),
         "description": row.get("description"),
+        "station_name": row.get("station_name"),
+        "area": row.get("area"),
         "city": row.get("city"),
         "country": row.get("country"),
         "latitude": row.get("latitude"),
@@ -1505,6 +1529,17 @@ def get_live_snapshot_rows(force=False, city_queries=None):
         return _json_clone(cached_rows) or []
 
     deduped = {}
+    if city_queries is None:
+        with LIVE_STATE_LOCK:
+            old_rows = LIVE_ROWS_CACHE.get("rows") or []
+        for row in old_rows:
+            key = normalize_query_text(row.get("city") or row.get("city_key") or row.get("query") or "").lower().strip()
+            if not key:
+                continue
+            row_ts = float(row.get("timestamp_epoch") or 0.0)
+            if now_ts - row_ts <= 1200:
+                deduped[key] = row
+
     for row in rows:
         key = normalize_query_text(row.get("city") or row.get("city_key") or row.get("query") or "").lower().strip()
         if not key:
@@ -1758,10 +1793,13 @@ def historical():
 
         if not entries:
             if city:
-                snapshot_rows = get_live_snapshot_rows(force=False, city_queries=[city])
-                row = select_live_row_for_city(snapshot_rows, city)
-                if row:
-                    entries = [_history_entry_from_row(row)]
+                if city_row:
+                    entries = [_history_entry_from_row(city_row)]
+                else:
+                    snapshot_rows = get_live_snapshot_rows(force=False, city_queries=[city])
+                    row = select_live_row_for_city(snapshot_rows, city)
+                    if row:
+                        entries = [_history_entry_from_row(row)]
             else:
                 rows = get_live_snapshot_rows(force=False)
                 if rows:
@@ -1776,7 +1814,6 @@ def historical():
         if not entries:
             return jsonify({"error": "No live historical data available yet"}), 404
 
-        entries = _ensure_min_history_points(entries, hours)
         return jsonify(build_historical_payload_from_entries(entries))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1887,9 +1924,12 @@ def heatmap():
 
         if not entries:
             if city:
-                row = select_live_row_for_city(rows, city)
-                if row:
-                    entries = [_history_entry_from_row(row)]
+                if city_row:
+                    entries = [_history_entry_from_row(city_row)]
+                else:
+                    row = select_live_row_for_city(rows, city)
+                    if row:
+                        entries = [_history_entry_from_row(row)]
             else:
                 # Seed with one aggregate point so heatmap can still render.
                 aqi_vals = [_to_float_or_none(r.get("aqi")) for r in rows]
