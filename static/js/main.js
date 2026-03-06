@@ -836,21 +836,35 @@ async function resolveHeroBg(cityName, countryName, queryHint = '') {
   const manifest = await loadHeroManifest();
   const parsedHint = parseMapStationLocation(hintText, cityText);
   const hintedCity = String(parsedHint?.city || '').trim();
+
+  // Build candidate city keys: prefer explicit city, then hint, then fall back to
+  // the current active city (curCity) so station selections (e.g. IHBAS) still
+  // show the parent city's skyline photo rather than a solid-colour gradient.
   const cityKeyCandidates = [
     resolveCityKey(cityText),
     resolveCityKey(hintedCity),
     resolveCityKey(hintText),
     resolveCityKey(parseCityCountry(hintText, hintText).city),
+    resolveCityKey(curCityDisplay || ''),  // parent city display name
+    resolveCityKey(curCity || ''),          // parent city key fallback
   ].filter(Boolean);
   const cityKey = cityKeyCandidates[0] || '';
   let resolved = null;
 
-  if (cityKey && FORCED_HERO_IMAGE_OVERRIDES[cityKey]) {
-    resolved = { imageUrl: FORCED_HERO_IMAGE_OVERRIDES[cityKey], focalPoint: 'center' };
-  }
-  if (!resolved && cityKey && manifest?.cities?.[cityKey]?.imageUrl) resolved = manifest.cities[cityKey];
-  if (!resolved && cityKey && LOCAL_CITY_FALLBACK[cityKey]) {
-    resolved = { imageUrl: LOCAL_CITY_FALLBACK[cityKey], focalPoint: 'center' };
+  // Try each candidate key in order until we find a photo
+  for (const key of cityKeyCandidates) {
+    if (FORCED_HERO_IMAGE_OVERRIDES[key]) {
+      resolved = { imageUrl: FORCED_HERO_IMAGE_OVERRIDES[key], focalPoint: 'center' };
+      break;
+    }
+    if (manifest?.cities?.[key]?.imageUrl) {
+      resolved = manifest.cities[key];
+      break;
+    }
+    if (LOCAL_CITY_FALLBACK[key]) {
+      resolved = { imageUrl: LOCAL_CITY_FALLBACK[key], focalPoint: 'center' };
+      break;
+    }
   }
 
   if (!resolved) {
@@ -1716,9 +1730,12 @@ function updateHeroUI(cityName, country, aqi, cat, desc, reqSeq = null) {
   const descTextEl = $('aqiDescText');
   if (descTextEl) descTextEl.textContent = desc || cat.text || '';
 
-  // AQI description bg
+  // AQI description bg — also reveal it now that we have content
   const descEl = document.querySelector('.aqi-description');
-  if (descEl) descEl.style.background = cat.bg;
+  if (descEl) {
+    descEl.style.background = cat.bg;
+    if (desc || cat.text) descEl.classList.add('has-content');
+  }
 
   updateCinematicHero({
     cityName,

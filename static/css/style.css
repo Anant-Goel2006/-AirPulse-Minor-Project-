@@ -1446,7 +1446,15 @@ select {
   font-size: .76rem;
   color: var(--text-secondary);
   line-height: 1.5;
-  transition: background .4s;
+  transition: background .4s, opacity .3s;
+  /* Hidden until JS populates text — prevents blank box on load */
+  opacity: 0;
+  pointer-events: none;
+}
+
+.aqi-description.has-content {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .aqi-description i {
