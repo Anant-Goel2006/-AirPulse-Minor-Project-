@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🌫️ Real-Time Air Quality Monitor
+# 🌫️ AirPulse (Real-Time Air Quality Monitor)
 
 **A full-stack AQI dashboard with live data, ML prediction, and AI health guidance.**
 
