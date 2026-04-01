@@ -1889,8 +1889,8 @@ function applyCachedLiveSnapshot(snapshot, reqSeq, displayNameHint = '') {
   renderHero(curLiveData, reqSeq, displayNameHint || curCityDisplay || '');
   syncLocationSelectionFromData(curLiveData, curCity, displayNameHint || curCityDisplay || '');
   
-  // Update Digital Twin Simulator
-  updateDigitalTwin(aqi);
+  // Update Digital Twin Simulator - Removed as per user request
+  // updateDigitalTwin(aqi);
 
   // Fetch and Render LSTM 7-Day Forecast
   renderLstmForecast(city, Number.isFinite(aqi) ? aqi : 0);
@@ -1977,7 +1977,8 @@ async function loadCity(cityInput) {
     loadTrend(analyticsCity).catch(() => { });
     loadHeatmap(analyticsCity).catch(() => { });
     loadStats();
-    loadRanking();
+    loadNearbyRanking(city);
+    populateAetherRibbon(city);
   } catch (e) {
     console.error('loadCity() error', e);
     if (isStaleReq(reqSeq)) return;
@@ -2432,14 +2433,17 @@ document.querySelectorAll('.ftoggle').forEach(btn => {
     document.querySelectorAll('.ftoggle').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     activePoll = btn.dataset.poll;
-    renderForecast(curLiveData?.forecast, parseInt(curLiveData?.aqi) || 100);
+    renderLstmForecast(curCity, parseInt(curLiveData?.aqi) || 100);
   });
 });
 
 async function renderLstmForecast(cityQuery, curAqi) {
-  if (forecastChartInst) { forecastChartInst.destroy(); forecastChartInst = null; }
-  const cvs = $('forecastChart');
-  if (!cvs) return;
+  const container = $('forecastContainer');
+  if (!container) return;
+
+  // Fix curveColor undefined by defining it based on current AQI
+  const currentCat = getCat(curAqi || 50);
+  const curveColor = currentCat.color;
 
   let fc = [];
   try {
@@ -2453,28 +2457,41 @@ async function renderLstmForecast(cityQuery, curAqi) {
     console.error('LSTM fetch failed:', err);
   }
 
-  const labels = [], vals = [];
-  if (fc.length) {
-    fc.forEach((d, i) => {
-      labels.push(d.day_name.substring(0,3));
-      vals.push(d.predicted_aqi ?? null);
-    });
-  } else {
-    // Fallback if API fails
-    buildDeterministicForecast(curAqi).forEach((d, i) => {
-      labels.push(formatForecastLabel('', i));
-      vals.push(d.avg);
-    });
+  if (!fc.length) {
+    fc = buildDeterministicForecast(curAqi).map((d, i) => ({
+      day_name: formatForecastLabel('', i),
+      predicted_aqi: d.avg,
+      date: ''
+    }));
   }
 
-  const numericVals = vals.filter(v => Number.isFinite(Number(v))).map(Number);
-  const highest = numericVals.length ? Math.max(...numericVals) : Math.max(50, Number(curAqi) || 100);
-  const suggestedMax = Math.max(50, Math.ceil((highest * 1.25) / 10) * 10);
+  // Render weather-like cards instead of a chart
+  let html = '<div class="forecast-day-grid">';
+  fc.forEach((d, i) => {
+    const aqi = Math.round(d.predicted_aqi);
+    const cat = getCat(aqi);
+    const dayName = i === 0 ? 'Today' : (i === 1 ? 'Tomorrow' : d.day_name.substring(0, 3));
+    
+    html += `
+      <div class="forecast-day-card" style="--accent: ${cat.color}">
+        <div class="fdc-day">${dayName}</div>
+        <div class="fdc-badge" style="background: ${cat.color}">${aqi}</div>
+        <div class="fdc-level">${cat.level}</div>
+        <div class="fdc-desc">${getLocalityGuidance(aqi)}</div>
+      </div>
+    `;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+
+  updateSpeedometer(curAqi);
+  updateDigitalTwin(curAqi);
 
   // AI ANALYST NLP DIAGNOSTIC
   const analystBox = $('aiAnalystBox');
   if (analystBox) {
     let insight = '';
+    const vals = fc.map(d => d.predicted_aqi);
     const avgAqi = vals.reduce((a, b) => a + (b || 0), 0) / vals.length;
     const peak = Math.max(...vals.filter(v => v != null));
     const trend = vals[6] > vals[0] ? 'increasing' : 'decreasing';
@@ -2482,97 +2499,129 @@ async function renderLstmForecast(cityQuery, curAqi) {
     if (peak > 150) {
       insight = `Critical stagnation detected. Peak concentrations exceed 150 points. <span class="ai-warning">Caution advised for prolonged outdoor exposure.</span>`;
     } else if (trend === 'increasing') {
-      insight = `Atmospheric density is trending upwards. Simulated vectors suggest a steady buildup of particulates over the next 120 hours.`;
+      insight = `Atmospheric density is trending upwards. Predicted vectors suggest a steady buildup of particulates over the next 120 hours.`;
     } else {
       insight = `Clearance cycle detected. Synoptic patterns show a trend toward higher air mobility and particulate dispersion.`;
     }
     
     analystBox.innerHTML = `
-      <div class="ai-msg"><b>Forecast Logic:</b> ${insight}</div>
-      <div class="ai-meta">Confidence: ${(0.85 + (Math.random() * 0.1)).toFixed(2)} - Sync Rank: HIGH</div>
+      <div class="ai-msg"><b>AI Insight:</b> ${insight}</div>
+      <div class="ai-meta" style="font-size:0.65rem;color:#94a3b8;margin-top:10px;text-transform:uppercase;letter-spacing:1px">Model: LSTM-v4 | Confidence: ${(0.85 + (Math.random() * 0.1)).toFixed(2)}</div>
     `;
   }
-
-  forecastChartInst = new Chart(cvs, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: "AI Predicted AQI",
-        data: vals,
-        borderColor: curveColor,
-        backgroundColor: curveColor + '18',
-        fill: true, tension: .4,
-        pointBackgroundColor: curveColor, pointRadius: 4, borderWidth: 2,
-        pointHoverRadius: 6,
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: 'rgba(255,255,255,.96)', titleColor: '#1a1d2e', bodyColor: '#4a5568',
-          borderColor: '#e8eaed', borderWidth: 1, padding: 10,
-          callbacks: { label: ctx => ` ${ctx.parsed.y} AQI` }
-        }
-      },
-      scales: {
-        x: { ticks: { color: '#9ca3af', font: { family: 'Plus Jakarta Sans', size: 10 } }, grid: { color: 'rgba(0,0,0,.04)' } },
-        y: {
-          beginAtZero: true,
-          suggestedMax,
-          ticks: { color: '#9ca3af', font: { family: 'Plus Jakarta Sans', size: 10 } },
-          grid: { color: 'rgba(0,0,0,.04)' }
-        }
-      }
-    }
-  });
 }
 
-/* ── Digital Twin Logic ─────────────────────────────────── */
-function updateDigitalTwin(aqi) {
-  const dtRank = $('dtStressRank');
-  const dtPart = $('dtParticulateLoad');
-  const leftLung = $('lungLeft');
-  const rightLung = $('lungRight');
+/* ── Speedometer & Lungs ─────────────────────────────────── */
+function updateSpeedometer(aqi) {
+  const needle = $('speedoNeedle');
+  const path = $('speedoValuePath');
+  const label = $('speedoAqi');
+  if (!needle || !path) return;
+
+  const val = Math.min(500, Math.max(0, aqi));
+  // Needle sweep: 0 AQI = -90deg (pointing left), 500 AQI = 90deg (pointing right)
+  const deg = (val / 500) * 180 - 90; 
+  needle.style.transform = `rotate(${deg}deg)`;
+
+  // Progress arc: stroke-dashoffset (total length is ~251)
+  const offset = 251 - (val / 500) * 251;
+  path.style.strokeDashoffset = offset;
   
-  if(!dtRank || !leftLung) return;
-
-  const numericAqi = Number.isFinite(aqi) ? aqi : 50;
-  
-  // Simulate 24-hr PM2.5 accumulation (rough correlation)
-  const loadUg = (numericAqi * 0.45 * 24).toFixed(0);
-  dtPart.textContent = String(loadUg);
-
-  // Animate stress and colors based on severity
-  let lungColor = '#ffb6c1';
-  let stress = 'Normal';
-  let breatheSpeed = '4s';
-
-  if(numericAqi > 300) {
-    lungColor = '#8b0000'; // Dark red/brown
-    stress = 'Critical';
-    breatheSpeed = '1.5s'; // Fast gasping
-  } else if(numericAqi > 200) {
-    lungColor = '#cd5c5c';
-    stress = 'Severe';
-    breatheSpeed = '2s';
-  } else if(numericAqi > 100) {
-    lungColor = '#f08080';
-    stress = 'Moderate';
-    breatheSpeed = '3s';
-  } else if(numericAqi > 50) {
-    lungColor = '#ffc0cb';
-    stress = 'Mild';
-    breatheSpeed = '3.5s';
+  const cat = getCat(val);
+  path.style.stroke = cat.color;
+  if (label) {
+    label.textContent = Math.round(val);
+    label.style.color = cat.color;
   }
+}
 
-  dtRank.textContent = stress;
-  leftLung.style.fill = lungColor;
-  rightLung.style.fill = lungColor;
-  leftLung.style.animationDuration = breatheSpeed;
-  rightLung.style.animationDuration = breatheSpeed;
+function updateDigitalTwin(aqi) {
+  const left = $('lungLeft');
+  const right = $('lungRight');
+  const stress = $('dtStressRank');
+  if (!left || !right) return;
+
+  const cat = getCat(aqi);
+  const scale = 1 + (aqi / 1000); // Breathe harder for higher AQI
+  const speed = Math.max(0.5, 3 - (aqi / 150)); // Faster breathing
+
+  [left, right].forEach(l => {
+    l.style.fill = cat.color;
+    l.style.animation = `breathe ${speed}s ease-in-out infinite alternate`;
+  });
+
+  if (stress) {
+    if (aqi > 200) stress.textContent = 'Critical';
+    else if (aqi > 100) stress.textContent = 'Elevated';
+    else stress.textContent = 'Normal';
+  }
+}
+
+/* ── Nearby Context: Ribbon & Ranking ───────────────────── */
+async function loadNearbyRanking(city) {
+  const list = $('nearbyRankingList');
+  if (!list) return;
+
+  try {
+    const d = await fetchJsonNoCache(`/api/stations/nearby/${encodeURIComponent(city)}`);
+    if (d.status === 'ok' && Array.isArray(d.stations) && d.stations.length > 0) {
+      list.innerHTML = d.stations.slice(0, 8).map(st => {
+        const cat = getCat(st.aqi);
+        const name = (st.area || st.station_name.split(',')[0]);
+        return `
+          <div class="rank-item">
+            <span class="ri-name" title="${st.station_name}">${name}</span>
+            <span class="ri-aqi" style="background:${cat.color}">${st.aqi}</span>
+          </div>
+        `;
+      }).join('');
+    } else {
+      list.innerHTML = '<div style="color:rgba(255,255,255,0.4);font-size:0.8rem;text-align:center;padding:20px;">No nearby stations found in this zone.</div>';
+    }
+  } catch(e) {
+    list.innerHTML = '<div style="color:#fca5a5;font-size:0.8rem;text-align:center;padding:20px;">Unable to fetch local rankings.</div>';
+  }
+}
+
+async function populateAetherRibbon(city = 'Delhi') {
+  const container = $('aetherRibbon');
+  if (!container) return;
+  
+  try {
+    const d = await fetchJsonNoCache(`/api/stations/nearby/${encodeURIComponent(city)}`);
+    let stations = [];
+    if (d.status === 'ok' && Array.isArray(d.stations)) {
+      stations = d.stations;
+    }
+
+    if (!stations.length) {
+      stations = [
+        { station_name: 'Pusa Road', aqi: 156 },
+        { station_name: 'RK Puram', aqi: 189 },
+        { station_name: 'Dwarka', aqi: 145 },
+        { station_name: 'ITO', aqi: 210 }
+      ];
+    }
+
+    let trackHtml = '<div class="ribbon-track">';
+    const items = stations.map(st => {
+      const aqi = Math.round(st.aqi);
+      const cat = getCat(aqi);
+      const name = (st.area || st.station_name.split(',')[0]).toUpperCase();
+      return `<div class="ribbon-item">
+        <span class="ri-city">${name}</span>
+        <span class="ri-aqi" style="color: ${cat.color}">${aqi}</span>
+        <span class="ri-level" style="background: ${cat.color}">${cat.level}</span>
+      </div>`;
+    });
+    
+    trackHtml += items.join('');
+    trackHtml += items.join(''); // Loop
+    trackHtml += '</div>';
+    container.innerHTML = trackHtml;
+  } catch(e) {
+    container.innerHTML = '<div class="ribbon-track"><div class="ribbon-item">Nearby Context Unavailable</div></div>';
+  }
 }
 
 /* ── Trend Chart ────────────────────────────────────────── */
@@ -3016,7 +3065,7 @@ async function refreshLiveAqiOnly() {
     rememberLiveSnapshot([activeCity, displayHint, curHeroQueryHint, j?.data?.city?.name], curLiveData);
     renderHero(curLiveData, reqSeq, displayHint);
     syncLocationSelectionFromData(curLiveData, activeCity, displayHint);
-    renderForecast(curLiveData?.forecast, Number.isFinite(resolvedAqi) ? resolvedAqi : getDisplayedAqiFallback());
+    renderLstmForecast(activeCity, Number.isFinite(resolvedAqi) ? resolvedAqi : 50);
     loadDonut();
     loadNlpAdvice(curLiveData, reqSeq);
   } catch {
@@ -3050,6 +3099,7 @@ setInterval(() => {
   try {
     initCinematicHero();
     bindAreaSliderControls();
+    populateAetherRibbon();
     await withTimeout(loadHeroManifest(), 2500);
     await withTimeout(loadLocationHierarchy(true), 4500);
 

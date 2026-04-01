@@ -108,14 +108,28 @@
           <span class="hero-level-label" id="heroLevelLabel">Loading...</span>
           <span class="hero-updated" id="heroUpdatedTime">Updated: --</span>
         </div>
+        
+        <!-- Premium Speedometer Gauge -->
+        <div class="hero-speedometer" id="heroSpeedometer">
+          <svg class="speedo-svg" viewBox="0 0 200 120">
+            <path class="speedo-bg-path" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke="#ffffff22" stroke-width="12" stroke-linecap="round"/>
+            <path class="speedo-value-path" id="speedoValuePath" d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke="var(--aqi-color)" stroke-width="14" stroke-linecap="round" stroke-dasharray="251" stroke-dashoffset="251"/>
+            <line class="speedo-needle" id="speedoNeedle" x1="100" y1="100" x2="100" y2="40" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+            <circle cx="100" cy="100" r="5" fill="#fff"/>
+          </svg>
+          <div class="speedo-text">
+            <span class="speedo-aqi" id="speedoAqi">—</span>
+            <span class="speedo-label">LIVE AQI</span>
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- ── ROW 1: AQI Hero + Pollutants ─────────────────────── -->
+    <!-- ── ROW 1: PREMIUM DASHBOARD HUB ───────────────────── -->
     <div class="hero-row">
 
-      <!-- AQI Card -->
-      <div class="aqi-hero-card" id="aqiHeroCard">
+      <!-- AQI Main Card (Frosted Glass) -->
+      <div class="aqi-hero-card glass-card" id="aqiHeroCard">
         <div class="aqi-city-meta">
           <div>
             <div class="aqi-city-name" id="aqiCityName">Delhi</div>
@@ -138,9 +152,7 @@
                   <feComposite in="SourceGraphic" in2="blur" operator="over"/>
                 </filter>
               </defs>
-              <!-- Background Bar -->
               <path class="gauge-bg-arc" d="M 40 140 A 100 100 0 0 1 240 140" fill="none" stroke-width="16" stroke-linecap="round"/>
-              <!-- Progress Bar -->
               <path class="gauge-progress-arc" id="gaugeProgress" d="M 40 140 A 100 100 0 0 1 240 140" fill="none" stroke-width="20" stroke-linecap="round" filter="url(#neonGlow)"/>
             </svg>
             <div class="gauge-center-content">
@@ -152,7 +164,6 @@
           <div class="gauge-caption">Live outdoor exposure meter</div>
         </div>
 
-        <!-- AQI description -->
         <div class="aqi-description" id="aqiDescription">
           <i class="fa-solid fa-circle-info"></i>
           <span id="aqiDescText">Fetching live data…</span>
@@ -164,91 +175,85 @@
             <span>AQI Guidance</span>
           </div>
           <p class="nlp-summary" id="nlpSummary">Generating precaution insights…</p>
-          <div class="nlp-meta">
-            <span id="nlpMask">Mask: --</span>
-          </div>
         </div>
 
-        <!-- Guidance Bot CTA -->
-        <button class="guidance-bot-btn" id="guidanceBotBtn" title="Ask Guidance Bot for health steps">
-          <i class="fa-solid fa-head-side-mask"></i>
-          <span>Open Air Coach</span>
-          <span class="bot-pulse"></span>
-        </button>
-
-        <!-- Quick stats -->
         <div class="aqi-quick-stats">
           <div class="qs-item">
             <i class="fa-solid fa-temperature-half"></i>
-            <span class="qs-label">Temp</span>
             <span class="qs-value" id="qsTemp">—</span>
           </div>
           <div class="qs-item">
             <i class="fa-solid fa-droplet"></i>
-            <span class="qs-label">Humidity</span>
             <span class="qs-value" id="qsHum">—</span>
           </div>
           <div class="qs-item">
             <i class="fa-solid fa-wind"></i>
-            <span class="qs-label">Wind</span>
             <span class="qs-value" id="qsWind">—</span>
           </div>
         </div>
       </div>
 
-      <!-- Pollutants Panel -->
-      <div class="pollutants-panel">
+      <!-- Pollutants Panel (Parameters) -->
+      <div class="pollutants-panel glass-card">
         <div class="panel-header">
-          <h3 class="panel-title">Pollutant Concentrations</h3>
+          <h3 class="panel-title">Atmospheric Parameters</h3>
           <div class="dominant-tag" id="dominantTag">
-            <span class="dt-label">Dominant:</span>
             <span class="dt-value" id="dominantValue">—</span>
           </div>
         </div>
-
         <div class="pollutants-grid" id="pollutantsGrid">
           <!-- Injected by JS -->
         </div>
+      </div>
+      
+      <!-- Nearby Area Rankings (Local Context) -->
+      <div class="nearby-ranking-card glass-card">
+        <div class="panel-header">
+          <h3 class="panel-title"><i class="fa-solid fa-location-dot"></i> Local Rankings</h3>
+        </div>
+        <div class="ranking-list" id="nearbyRankingList">
+          <div class="loading-ranks">Scanning nearby stations...</div>
+        </div>
+      </div>
+    </div>
 
-        <!-- ── DIGITAL TWIN SIMULATOR ──────────────────────────── -->
-        <div class="digital-twin-sim" id="digitalTwinSim">
+    <!-- ── FULL WIDTH AI FORECAST ────────────────────────── -->
+    <section class="forecast-banner-section">
+      <div class="page-container">
+        <div class="forecast-section-hub">
           <div class="section-title-row">
-            <h4 class="section-title"><i class="fa-solid fa-lungs"></i> Digital Twin Exposure Simulator</h4>
+            <h4 class="section-title"><i class="fa-solid fa-brain"></i> 7-Day AI Prediction Hub</h4>
           </div>
-          <p class="digital-twin-desc">Visualizing simulated toll of 24h exposure at current AQI.</p>
-          <div class="lungs-container" id="lungsContainer">
-            <svg class="lungs-svg" viewBox="0 0 200 200" preserveAspectRatio="xMidYMid meet">
-              <!-- Left Lung -->
-              <path class="lung-path lung-left" id="lungLeft" d="M95,30 C60,40 40,80 45,150 C60,165 90,165 95,140 Z"/>
-              <!-- Right Lung -->
-              <path class="lung-path lung-right" id="lungRight" d="M105,30 C140,40 160,80 155,150 C140,165 110,165 105,140 Z"/>
-              <!-- Trachea -->
-              <path class="trachea-path" d="M95,10 L95,30 M105,10 L105,30"/>
-            </svg>
-            <div class="lungs-fx-overlay" id="lungsFxOverlay"></div>
-          </div>
-          <div class="digital-twin-metrics">
-            <div class="dt-metric"><span id="dtStressRank">Normal</span><br>Tissue Stress</div>
-            <div class="dt-metric"><span id="dtParticulateLoad">0</span> µg<br>Particulate Load</div>
+          <div class="forecast-container" id="forecastContainer">
+            <!-- Injected by JS -->
           </div>
         </div>
+      </div>
+    </section>
 
-        <!-- Forecast Chart & AI Analyst -->
-        <div class="forecast-section-hub">
-          <div class="forecast-chart-side">
-            <div class="section-title-row">
-              <h4 class="section-title"><i class="fa-solid fa-brain"></i> LSTM AI 7-Day Forecast</h4>
-            </div>
-            <div class="chart-canvas-wrap" style="height:160px">
-              <canvas id="forecastChart"></canvas>
-            </div>
+    <!-- ── ROW 2: AI Diagnostic & Parameters ────────────────── -->
+    <div class="page-container">
+      <div class="ai-hub-row">
+        <!-- AI Diagnostic Box with Integrated Lungs -->
+        <div class="ai-analyst-card">
+          <div class="section-title-row">
+            <h4 class="section-title"><i class="fa-solid fa-microchip"></i> Atmos AI Diagnostic</h4>
           </div>
-          <div class="ai-analyst-side">
-            <div class="section-title-row">
-              <h4 class="section-title"><i class="fa-solid fa-microchip"></i> Atmos AI Diagnostic</h4>
+          <div class="ai-analyst-content">
+            <div class="ai-analyst-visual">
+               <div class="lungs-container compact" id="lungsContainer">
+                <svg class="lungs-svg" viewBox="0 0 200 200">
+                  <path class="lung-path lung-left" id="lungLeft" d="M95,30 C60,40 40,80 45,150 C60,165 90,165 95,140 Z"/>
+                  <path class="lung-path lung-right" id="lungRight" d="M105,30 C140,40 160,80 155,150 C140,165 110,165 105,140 Z"/>
+                  <path class="trachea-path" d="M95,10 L95,30 M105,10 L105,30"/>
+                </svg>
+              </div>
+              <div class="dt-mini-metrics">
+                <span id="dtStressRank">Normal</span> stress
+              </div>
             </div>
             <div class="ai-analyst-box" id="aiAnalystBox">
-               <div class="ai-msg">Analyzing atmospheric vectors...</div>
+              <div class="ai-msg">Analyzing atmospheric vectors with local context...</div>
             </div>
           </div>
         </div>

@@ -21,6 +21,11 @@ import requests
 from dotenv import load_dotenv
 
 try:
+    from backend.app.services.lstm_model import generate_lstm_forecast
+except Exception:
+    generate_lstm_forecast = None
+
+try:
     from backend.app.services.openai_guidance import (
         build_guidance_base,
         generate_openai_guidance,
@@ -1140,6 +1145,37 @@ def live_area_list(city):
     return jsonify(out), 200
 
 
+@app.route("/api/stations/nearby/<path:city>")
+def api_stations_nearby(city):
+    """List of nearby stations specifically for ribbon/ranking (returns up to 15 stations within 30km)."""
+    if not WAQI_TOKEN:
+        return waqi_token_missing_response("status")
+    
+    # Resolve the main city first to get coordinates
+    payload, code = resolve_best_live_payload(city)
+    if not is_valid_feed_payload(payload):
+        return jsonify(payload), code
+    
+    data = payload.get("data") or {}
+    city_meta = data.get("city") or {}
+    geo = city_meta.get("geo") if isinstance(city_meta, dict) else None
+    try:
+        center_lat = float(geo[0])
+        center_lng = float(geo[1])
+    except Exception:
+        return jsonify({"status": "error", "data": "Coordinates unavailable"}), 422
+
+    rows = collect_live_area_rows(
+        center_lat=center_lat,
+        center_lng=center_lng,
+        fallback_city=normalize_query_text(city),
+        radius_limit=30.0,
+        max_rows=15,
+    )
+    
+    return jsonify({"status": "ok", "stations": rows}), 200
+
+
 def resolve_nearest_live_station(lat, lng, radius_limit=20.0):
     radius_limit = safe_float(radius_limit, 20.0)
     if radius_limit <= 0:
@@ -2005,6 +2041,20 @@ def current_aqi():
         return jsonify(payload)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/predict/7day")
+def api_predict_7day():
+    """7-day LSTM forecast endpoint."""
+    try:
+        if not generate_lstm_forecast:
+            return jsonify({"status": "error", "data": "Forecast generator not available"}), 500
+        city = str(request.args.get("city", "") or "").strip() or "Delhi"
+        aqi_value = safe_float(request.args.get("aqi"), 50.0)
+        forecast = generate_lstm_forecast(city, aqi_value, 0, 0)
+        return jsonify({"status": "ok", "city": city, "model": "LSTM_Service", "forecast": forecast}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "data": str(e)}), 500
 
 
 @app.route("/api/location-hierarchy")
